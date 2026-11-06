@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Read-only recent GitHub Actions runs as Pulse status tiles.
+# Needs: gh, jq. Env: GITHUB_REPO (owner/name). Optional: GITHUB_ACTIONS_LIMIT.
+set -euo pipefail
+REPO="${GITHUB_REPO:-}"
+LIMIT="${GITHUB_ACTIONS_LIMIT:-6}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --repo) REPO="$2"; shift 2 ;;
+    --limit) LIMIT="$2"; shift 2 ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+if [[ -z "$REPO" ]]; then
+  echo "set GITHUB_REPO (owner/name) or pass --repo" >&2
+  exit 1
+fi
+
+gh run list -R "$REPO" -L "$LIMIT" --json displayTitle,status,conclusion \
+  | jq '{
+      type: "status",
+      items: map({
+        title: .displayTitle,
+        level: (if .conclusion == "success" then "ok"
+                elif .conclusion == "failure" then "crit"
+                elif .status != "completed" then "info"
+                else "warn" end)
+      })
+    }'

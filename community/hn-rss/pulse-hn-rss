@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Hacker News frontpage titles for the Pulse ticker / list.
+# Needs: curl, python3. Optional: HN_RSS_URL, HN_LIMIT.
+set -euo pipefail
+URL="${HN_RSS_URL:-https://hnrss.org/frontpage}"
+LIMIT="${HN_LIMIT:-8}"
+TIMEOUT="${PULSE_TIMEOUT:-15}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --url) URL="$2"; shift 2 ;;
+    --limit) LIMIT="$2"; shift 2 ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+curl -sS --max-time "$TIMEOUT" "$URL" | HN_LIMIT_INNER="$LIMIT" python3 -c '
+import json, os, sys, xml.etree.ElementTree as E
+limit = int(os.environ.get("HN_LIMIT_INNER", "8"))
+root = E.parse(sys.stdin)
+items = []
+for i in root.iter("item"):
+    title = (i.findtext("title") or "").strip()
+    if title:
+        items.append({"title": title})
+    if len(items) >= limit:
+        break
+print(json.dumps({"type": "list", "items": items}))
+'

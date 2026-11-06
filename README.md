@@ -88,6 +88,10 @@ curl -s -X POST -H "X-Pulse-Token: $(cat ~/.config/omarchy-pulse/token)" \
      --data '{"value": 21.5, "unit": "°C"}' http://127.0.0.1:47800/api/push/garage
 ```
 
+## Community sources
+
+Ready-made sources from the community (Zabbix, Proxmox, GitHub Actions, HN, Docker, …): copy a folder from [`community/`](community/) into `~/.config/omarchy-pulse/sources/` and paste its `source.toml`. How to propose a new one: [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
 ## Built in
 
 System (CPU, every core, RAM, GPU, temperature, disk, battery), network, weather (Open-Meteo, no key), now

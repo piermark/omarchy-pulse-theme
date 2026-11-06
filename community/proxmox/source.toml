@@ -1,0 +1,10 @@
+[[source]]
+name = "proxmox"
+title = "proxmox"
+icon = "󰡨"
+type = "status"
+every = 60
+slot = "right"
+# Set PROXMOX_SSH in the environment, or:
+# command = '''PROXMOX_SSH=root@pve pulse-proxmox'''
+command = "pulse-proxmox"

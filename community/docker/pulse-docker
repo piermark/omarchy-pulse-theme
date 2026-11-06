@@ -1,0 +1,42 @@
+#!/usr/bin/env python3
+"""Local Docker containers as a Pulse key/value table. Needs: docker CLI."""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+
+
+def main() -> int:
+    filter_val = os.environ.get("DOCKER_PS_FILTER", "").strip()
+    cmd = ["docker", "ps", "--format", "{{.Names}}\t{{.Status}}"]
+    if filter_val:
+        cmd += ["--filter", filter_val]
+    try:
+        out = subprocess.check_output(cmd, text=True, stderr=subprocess.STDOUT)
+    except FileNotFoundError:
+        print("docker not found", file=sys.stderr)
+        return 1
+    except subprocess.CalledProcessError as e:
+        sys.stderr.write(e.output or str(e))
+        return e.returncode or 1
+
+    rows = []
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if "\t" in line:
+            name, status = line.split("\t", 1)
+        else:
+            parts = line.split(None, 1)
+            name = parts[0]
+            status = parts[1] if len(parts) > 1 else ""
+        rows.append([name, status])
+    print(json.dumps({"rows": rows}))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

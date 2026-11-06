@@ -1,0 +1,7 @@
+[[source]]
+name = "docker"
+title = "docker"
+icon = "󰡨"
+every = 30
+slot = "left"
+command = "pulse-docker"

@@ -1,0 +1,8 @@
+[[source]]
+name = "hn"
+title = "HN"
+icon = "󰎙"
+slot = "ticker"
+type = "list"
+every = 900
+command = "pulse-hn-rss"

@@ -1,0 +1,11 @@
+[[source]]
+name = "zabbix"
+title = "zabbix"
+icon = "󰒋"
+type = "status"
+every = 30
+slot = "right"
+notify = true
+# Set ZABBIX_URL and ZABBIX_TOKEN in the environment, or inline:
+# command = '''ZABBIX_URL=https://zabbix.example.lan ZABBIX_TOKEN=... pulse-zabbix'''
+command = "pulse-zabbix"

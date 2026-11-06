@@ -1,0 +1,10 @@
+[[source]]
+name = "ci"
+title = "ci"
+icon = "󰊢"
+type = "status"
+every = 120
+slot = "right"
+# Set GITHUB_REPO in the environment, or:
+# command = '''GITHUB_REPO=owner/repo pulse-github-actions'''
+command = "pulse-github-actions"

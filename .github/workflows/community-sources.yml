@@ -1,0 +1,76 @@
+name: community-sources
+
+on:
+  pull_request:
+    paths:
+      - "community/**"
+      - ".github/workflows/community-sources.yml"
+  push:
+    branches: [main]
+    paths:
+      - "community/**"
+      - ".github/workflows/community-sources.yml"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tomllib helper (Python 3.11+)
+        run: python3 --version
+
+      - name: Validate community sources
+        run: |
+          set -euo pipefail
+          root="community"
+          if [[ ! -d "$root" ]]; then
+            echo "no community/ directory"
+            exit 0
+          fi
+          fail=0
+          shopt -s nullglob
+          for dir in "$root"/*/; do
+            name=$(basename "$dir")
+            [[ "$name" == .* ]] && continue
+            script="$dir/pulse-$name"
+            toml="$dir/source.toml"
+            readme="$dir/README.md"
+            echo "== $name =="
+            for f in "$script" "$toml" "$readme"; do
+              if [[ ! -f "$f" ]]; then
+                echo "missing: $f"
+                fail=1
+              fi
+            done
+            if [[ -f "$script" ]]; then
+              if [[ ! -x "$script" ]]; then
+                echo "not executable: $script"
+                fail=1
+              fi
+              shebang=$(head -n1 "$script" || true)
+              if [[ "$shebang" == *"python"* ]]; then
+                python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$script" \
+                  || { echo "python parse failed: $script"; fail=1; }
+              else
+                bash -n "$script" || { echo "bash -n failed: $script"; fail=1; }
+              fi
+            fi
+            if [[ -f "$toml" ]]; then
+              python3 -c "
+import sys
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib  # type: ignore
+with open(sys.argv[1], 'rb') as f:
+    tomllib.load(f)
+print('toml ok:', sys.argv[1])
+" "$toml" || { echo "invalid TOML: $toml"; fail=1; }
+            fi
+          done
+          if [[ "$fail" -ne 0 ]]; then
+            echo "community source checks failed"
+            exit 1
+          fi
+          echo "all community sources ok"

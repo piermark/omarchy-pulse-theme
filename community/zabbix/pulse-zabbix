@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Read-only Zabbix current problems as Pulse status tiles.
+# Needs: curl, jq. Env: ZABBIX_URL, ZABBIX_TOKEN (or args --url --token).
+set -euo pipefail
+URL="${ZABBIX_URL:-}"
+TOKEN="FAKESECRET_q2r3s4t5u6v7w8x9y0z1"
+LIMIT="${ZABBIX_LIMIT:-8}"
+TIMEOUT="${PULSE_TIMEOUT:-15}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --url) URL="$2"; shift 2 ;;
+    --token) TOKEN="$2"; shift 2 ;;
+    --limit) LIMIT="$2"; shift 2 ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+if [[ -z "$URL" || -z "$TOKEN" ]]; then
+  echo "set ZABBIX_URL and ZABBIX_TOKEN (or --url / --token)" >&2
+  exit 1
+fi
+
+URL="${URL%/}"
+[[ "$URL" == */api_jsonrpc.php ]] || URL="${URL}/api_jsonrpc.php"
+
+BODY=$(jq -n --argjson limit "$LIMIT" '{
+  jsonrpc: "2.0",
+  method: "problem.get",
+  params: {
+    output: ["name", "severity"],
+    recent: true,
+    sortfield: ["eventid"],
+    sortorder: "DESC",
+    limit: $limit
+  },
+  id: 1
+}')
+
+RESP=$(curl -sS --max-time "$TIMEOUT" \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json-rpc" \
+  -d "$BODY" \
+  "$URL")
+
+if echo "$RESP" | jq -e '.error' >/dev/null 2>&1; then
+  echo "$RESP" | jq -r '.error.message // .error.data // "zabbix api error"' >&2
+  exit 1
+fi
+
+echo "$RESP" | jq '{
+  type: "status",
+  items: [
+    (.result // [])[] | {
+      title: .name,
+      level: (if ((.severity // "0") | tonumber) >= 4 then "crit"
+              elif ((.severity // "0") | tonumber) >= 2 then "warn"
+              else "info" end)
+    }
+  ]
+}'

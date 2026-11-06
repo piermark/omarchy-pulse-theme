@@ -236,6 +236,8 @@ slot = "center"
 
 ## 9. Cookbook
 
+Ready-made community sources (copy a folder, paste the TOML): [`community/`](../community/).
+
 **Zabbix: current problems as tiles** (API token from *User settings → API tokens*)
 
 ```toml

@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Read-only Proxmox VMs/CTs as Pulse status tiles via SSH + pvesh.
+# Needs: ssh, jq. Env: PROXMOX_SSH (e.g. root@pve or pve).
+set -euo pipefail
+SSH_TARGET="${PROXMOX_SSH:-}"
+TIMEOUT="${PULSE_TIMEOUT:-20}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --ssh) SSH_TARGET="$2"; shift 2 ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+if [[ -z "$SSH_TARGET" ]]; then
+  echo "set PROXMOX_SSH (e.g. root@pve) or pass --ssh" >&2
+  exit 1
+fi
+
+RAW=$(ssh -o BatchMode=yes -o ConnectTimeout="$TIMEOUT" "$SSH_TARGET" \
+  pvesh get /cluster/resources --type vm --output-format json)
+
+echo "$RAW" | jq '{
+  type: "status",
+  items: map({
+    title: (.name // (.vmid | tostring)),
+    note: (.status // "unknown"),
+    level: (if .status == "running" then "ok" else "warn" end)
+  })
+}'
