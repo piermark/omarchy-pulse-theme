@@ -90,7 +90,22 @@ curl -s -X POST -H "X-Pulse-Token: $(cat ~/.config/omarchy-pulse/token)" \
 
 ## Community sources
 
-Ready-made sources from the community (Zabbix, Proxmox, GitHub Actions, HN, Docker, …): copy a folder from [`community/`](community/) into `~/.config/omarchy-pulse/sources/` and paste its `source.toml`. How to propose a new one: [`CONTRIBUTING.md`](CONTRIBUTING.md).
+Pulse shows any live data, and the best sources come from the people who use it.
+[`community/`](community/) is a growing collection of ready-made sources: Zabbix, Proxmox, GitHub
+Actions, Docker, Hacker News and more. Each one is a folder with the script, the `[[source]]` block
+to paste in your `pulse.toml` and a short README.
+
+Install one:
+
+    cp community/zabbix/pulse-zabbix ~/.config/omarchy-pulse/sources/
+    chmod +x ~/.config/omarchy-pulse/sources/pulse-zabbix
+
+then paste `community/zabbix/source.toml` into `~/.config/omarchy-pulse/pulse.toml`.
+
+**Made a source for your homelab, your printer, your smart home?** Open a pull request: see
+[CONTRIBUTING.md](CONTRIBUTING.md). Sources run on other people's PCs, so they are read-only,
+keep secrets out of the files and talk only to the service they say. Wanted: UniFi, Pi-hole,
+OctoPrint/Klipper, Uptime Kuma, Grafana, TrueNAS, Synology, Wazuh, Jellyfin, Tailscale.
 
 ## Built in
 

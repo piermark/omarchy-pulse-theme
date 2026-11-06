@@ -11,6 +11,9 @@ on:
       - "community/**"
       - ".github/workflows/community-sources.yml"
 
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: ubuntu-latest

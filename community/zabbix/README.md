@@ -23,7 +23,9 @@ cp community/zabbix/pulse-zabbix ~/.config/omarchy-pulse/sources/
 chmod +x ~/.config/omarchy-pulse/sources/pulse-zabbix
 ```
 
-Then paste `source.toml` into `~/.config/omarchy-pulse/pulse.toml` (tokens and addresses go there or in environment variables, never inside the script).
+Then paste `source.toml` into `~/.config/omarchy-pulse/pulse.toml`.
+
+Pulse runs as a systemd user service and does **not** see your terminal environment. Set the variables in the command line of `source.toml` (see the active `command =` there). Environment variables only work if you set them for the systemd user service (for example with `Environment=` / `EnvironmentFile=` in the unit).
 
 ## Notes
 
