@@ -20,7 +20,8 @@ A UniFi gateway on your wallpaper:
 | `UNIFI_SITE` | no | Site name, default `default` |
 | `UNIFI_LIMIT` | no | Rows in `clients`, default 8 |
 | `UNIFI_HIDE_NAMES` | no | `1` shows clients as "device 1", "device 2"... (for screenshots) |
-| `UNIFI_VERIFY_TLS` | no | `1` checks the certificate. Off by default, since gateways use a self-signed one on the LAN |
+| `UNIFI_PIN_FILE` | no | Where `pulse-unifi pin` keeps the gateway's certificate fingerprint, default `~/.config/pulse-unifi/cert.sha256` |
+| `UNIFI_VERIFY_TLS` | no | `1` verifies the certificate against your CAs (system store or `SSL_CERT_FILE`) instead of the pin |
 
 Save the key:
 
@@ -37,10 +38,18 @@ cp community/unifi/pulse-unifi ~/.config/omarchy-pulse/sources/
 chmod +x ~/.config/omarchy-pulse/sources/pulse-unifi
 ```
 
+Pin the gateway's certificate, once:
+
+```bash
+UNIFI_URL=https://192.168.1.1 ~/.config/omarchy-pulse/sources/pulse-unifi pin
+```
+
+Gateways serve a self-signed certificate on the LAN, so the script saves its SHA-256 fingerprint and sends the key only to a gateway that shows the same certificate. If it changes, the panel shows "does not match the pin" and nothing is sent. Pin again only when you know why it changed (new certificate, gateway reset). With a certificate from a CA you trust, set `UNIFI_VERIFY_TLS=1` instead.
+
 Then paste `source.toml` into `~/.config/omarchy-pulse/pulse.toml` (tokens and addresses go there or in environment variables, never inside the script). The clients panel is `private = true` (hidden while you share the screen): device names are often people's names.
 
 Pulse runs as a systemd user service and does **not** see your terminal environment. Set the variables in the command line of `source.toml` (see the active `command =` there).
 
 ## Notes
 
-Read-only: GET requests to `/proxy/network` on the gateway (`stat/health`, `clients/active`). Contacts only `UNIFI_URL`. The key has the rights of the UniFi user that created it; the script never writes. Client rates are from the gateway's side, so the script swaps them to show what each device downloads and uploads.
+Read-only: GET requests to `/proxy/network` on the gateway (`stat/health`, `clients/active`). Contacts only `UNIFI_URL`. The only file it writes is the pin, and only when you run `pulse-unifi pin`. The key has the rights of the UniFi user that created it; the script never writes to the gateway. Client rates are from the gateway's side, so the script swaps them to show what each device downloads and uploads.

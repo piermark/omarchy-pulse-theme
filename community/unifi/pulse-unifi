@@ -3,18 +3,24 @@
 
   pulse-unifi            WAN download in Mbit/s (stat with sparkline), upload and ISP in the note
   pulse-unifi clients    busiest clients as a name -> rates table, client count in the note
+  pulse-unifi pin        save the gateway's certificate fingerprint (run once, by hand)
 
 Env: UNIFI_URL (https://192.168.1.1), UNIFI_KEY_FILE or UNIFI_KEY, optional UNIFI_SITE (default),
-UNIFI_LIMIT (8), UNIFI_HIDE_NAMES=1, UNIFI_VERIFY_TLS=1.
+UNIFI_LIMIT (8), UNIFI_HIDE_NAMES=1, UNIFI_PIN_FILE (~/.config/pulse-unifi/cert.sha256),
+UNIFI_VERIFY_TLS=1.
+
+The key is sent only to a gateway whose certificate matches the pin, or that passes normal
+TLS verification when UNIFI_VERIFY_TLS=1.
 """
 from __future__ import annotations
 
+import hashlib
+import http.client
 import json
 import os
 import ssl
 import sys
-import urllib.error
-import urllib.request
+import urllib.parse
 
 TIMEOUT = float(os.environ.get("PULSE_TIMEOUT", "10"))
 
@@ -34,34 +40,89 @@ def load_key() -> str:
     return key
 
 
-def context() -> ssl.SSLContext:
+def pin_file() -> str:
+    return os.path.expanduser(env("UNIFI_PIN_FILE", "~/.config/pulse-unifi/cert.sha256"))
+
+
+def read_pin() -> str | None:
+    try:
+        with open(pin_file()) as f:
+            return f.read().strip().lower().replace(":", "") or None
+    except FileNotFoundError:
+        return None
+
+
+def target() -> tuple[str, int]:
+    u = urllib.parse.urlsplit(env("UNIFI_URL"))
+    if u.scheme != "https" or not u.hostname:
+        raise SystemExit("set UNIFI_URL, e.g. https://192.168.1.1")
+    return u.hostname, u.port or 443
+
+
+def connect(pinning: bool = True) -> http.client.HTTPSConnection:
+    """TLS connection to the gateway, authenticated before anything is sent.
+
+    Gateways serve a self-signed certificate on the LAN, so by default it is pinned by
+    its SHA-256 fingerprint (`pulse-unifi pin`). UNIFI_VERIFY_TLS=1 verifies it the
+    normal way instead (system CAs or SSL_CERT_FILE), hostname included.
+    """
+    verify = env("UNIFI_VERIFY_TLS") == "1"
     ctx = ssl.create_default_context()
-    if env("UNIFI_VERIFY_TLS") != "1":
-        # Gateways serve a self-signed certificate on the LAN.
+    if not verify:
+        # No CA to check against: the fingerprint check below authenticates the gateway.
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-    return ctx
+    host, port = target()
+    conn = http.client.HTTPSConnection(host, port, context=ctx, timeout=TIMEOUT)
+    conn.connect()
+    if verify or not pinning:
+        return conn
+    fp = hashlib.sha256(conn.sock.getpeercert(binary_form=True)).hexdigest()
+    pin = read_pin()
+    if pin is None:
+        conn.close()
+        raise SystemExit("unifi: gateway certificate not pinned yet, run once: pulse-unifi pin")
+    if fp != pin:
+        conn.close()
+        raise SystemExit("unifi: gateway certificate does not match the pin, key not sent. "
+                         "If you replaced the certificate yourself, run: pulse-unifi pin")
+    return conn
+
+
+def pin() -> int:
+    """Trust on first use: save the fingerprint of the certificate the gateway serves now."""
+    conn = connect(pinning=False)
+    try:
+        fp = hashlib.sha256(conn.sock.getpeercert(binary_form=True)).hexdigest()
+    finally:
+        conn.close()
+    path = pin_file()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(fp + "\n")
+    print(f"pinned {env('UNIFI_URL')} sha256 {':'.join(fp[i:i + 2] for i in range(0, len(fp), 2))} -> {path}")
+    return 0
 
 
 class Api:
     def __init__(self) -> None:
-        self.base = env("UNIFI_URL").rstrip("/")
-        if not self.base:
-            raise SystemExit("set UNIFI_URL, e.g. https://192.168.1.1")
+        target()
         self.site = env("UNIFI_SITE", "default")
         self.key = load_key()
-        self.ctx = context()
 
     def get(self, path: str):
-        req = urllib.request.Request(
-            f"{self.base}/proxy/network{path.format(site=self.site)}",
-            headers={"X-API-KEY": self.key, "Accept": "application/json"},
-        )
+        path = path.format(site=self.site)
+        conn = connect()
         try:
-            with urllib.request.urlopen(req, context=self.ctx, timeout=TIMEOUT) as r:
-                data = json.load(r)
-        except urllib.error.HTTPError as e:
-            raise SystemExit(f"unifi: HTTP {e.code} on {path.format(site=self.site)}") from None
+            conn.request("GET", f"/proxy/network{path}", headers={"X-API-KEY": self.key, "Accept": "application/json"})
+            r = conn.getresponse()
+            status, raw = r.status, r.read()
+        finally:
+            conn.close()
+        if status >= 400:
+            raise SystemExit(f"unifi: HTTP {status} on {path}")
+        data = json.loads(raw)
         return data["data"] if isinstance(data, dict) and "data" in data else data
 
 
@@ -108,10 +169,12 @@ def clients(api: Api) -> dict:
 def main(argv: list[str]) -> int:
     mode = argv[1] if len(argv) > 1 else "rate"
     modes = {"rate": rate, "clients": clients}
-    if mode not in modes:
+    if mode not in modes and mode != "pin":
         print(__doc__.strip(), file=sys.stderr)
         return 2
     try:
+        if mode == "pin":
+            return pin()
         print(json.dumps(modes[mode](Api()), ensure_ascii=False))
     except (OSError, ValueError) as e:
         print(f"unifi: {getattr(e, 'reason', None) or e}", file=sys.stderr)
