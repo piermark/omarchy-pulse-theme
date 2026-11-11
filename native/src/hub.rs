@@ -7,6 +7,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub const DEFAULT_PORT: u16 = 47800;
+/// Pulse's own scenes; any other name is a scene of yours (the editor's, the community's, or one in code).
+pub const BUILTIN: [&str; 7] = ["sphere", "skyline", "orbit", "calm", "hacker", "noir", "city"];
 
 /// What the hub said last, and when.
 #[derive(Clone, Default)]
@@ -14,6 +16,10 @@ pub struct Snapshot {
     pub state: Value,
     pub at: Option<Instant>,
     pub error: Option<String>,
+    /// the design of the hub's scene when it is one made with the editor (or a community `.pulse`): its name, its data
+    pub design: Option<(String, Value)>,
+    /// a scene in code (JavaScript): the web page runs it; this renderer says so and shows the skyline
+    pub handwritten: Option<String>,
 }
 
 pub type Shared = Arc<Mutex<Snapshot>>;
@@ -64,11 +70,26 @@ pub fn start(base: String, token: String) -> Shared {
         .spawn(move || {
             let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(4)).build();
             let url = format!("{base}/api/state?token={token}");
+            let (base, token) = (base.clone(), token.clone());
             loop {
                 let got = agent.get(&url).call().map_err(|e| e.to_string()).and_then(|r| r.into_string().map_err(|e| e.to_string())).and_then(|b| serde_json::from_str::<Value>(&b).map_err(|e| e.to_string()));
                 if let Ok(mut s) = out.lock() {
                     match got {
                         Ok(v) => {
+                            // a scene that is not one of Pulse's own: ask the hub for its design, once
+                            let name = text(&v, &["ui", "scene"]);
+                            let known = s.design.as_ref().map(|d| d.0 == name).unwrap_or(false) || s.handwritten.as_deref() == Some(name.as_str());
+                            if !BUILTIN.contains(&name.as_str()) && !name.is_empty() && !known {
+                                let durl = format!("{base}/api/scene-design?name={name}&token={token}");
+                                if let Ok(d) = agent.get(&durl).call().map_err(|e| e.to_string()).and_then(|r| r.into_string().map_err(|e| e.to_string())).and_then(|b| serde_json::from_str::<Value>(&b).map_err(|e| e.to_string())) {
+                                    if d.get("design").map(|x| x.is_object()).unwrap_or(false) {
+                                        s.design = Some((name.clone(), d["design"].clone()));
+                                        s.handwritten = None;
+                                    } else {
+                                        s.handwritten = Some(name.clone());
+                                    }
+                                }
+                            }
                             s.state = v;
                             s.at = Some(Instant::now());
                             s.error = None;

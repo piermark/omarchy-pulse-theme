@@ -10,6 +10,7 @@
 //!     pulse-native --url http://127.0.0.1:47800 --fps 30
 
 mod city;
+mod design;
 mod hub;
 mod life;
 mod palette;
@@ -37,6 +38,11 @@ struct Pulse {
     city: Rc<RefCell<city::World>>,
     scene: String,
     marks: Rc<RefCell<Vec<scene::PlaneMark>>>,
+    mem: Rc<RefCell<design::Mem>>,
+    drawn: Rc<RefCell<(Vec<design::Words>, Vec<design::Picture>)>>,
+    /// the pictures of the design on show, by asset id
+    assets: (String, std::collections::HashMap<String, std::sync::Arc<gpui::Image>>),
+    reacted: f64,
     started: Instant,
     font: SharedString,
 }
@@ -51,7 +57,7 @@ impl Pulse {
             cx.background_executor().timer(every).await;
         })
         .detach();
-        Pulse { hub, live, forced: !scene.is_empty(), scene, city: Rc::new(RefCell::new(city::World::new())), world: Rc::new(RefCell::new(scene::World::new())), marks: Rc::new(RefCell::new(Vec::new())), started: Instant::now(), font: font.into() }
+        Pulse { hub, live, forced: !scene.is_empty(), scene, city: Rc::new(RefCell::new(city::World::new())), world: Rc::new(RefCell::new(scene::World::new())), marks: Rc::new(RefCell::new(Vec::new())), mem: Rc::new(RefCell::new(design::Mem::default())), drawn: Rc::new(RefCell::new((Vec::new(), Vec::new()))), assets: (String::new(), Default::default()), reacted: 0.0, started: Instant::now(), font: font.into() }
     }
 }
 
@@ -296,15 +302,41 @@ impl Render for Pulse {
         let hub_scene = text(&st, &["ui", "scene"]);
         let scene_name = if self.forced { self.scene.clone() } else if hub_scene.is_empty() { "skyline".to_string() } else { hub_scene };
         let sphere = scene_name == "sphere";
+        // a scene made with the editor (or a community .pulse): its design, drawn over Pulse's real sky
+        let design = snap.design.clone().filter(|d| d.0 == scene_name);
+        let scene_st = if get(&st, &["scene"]).is_object() { get(&st, &["scene"]).clone() } else { st.clone() };
+        if let Some((name, d)) = &design {
+            if &self.assets.0 != name {
+                self.assets = (name.clone(), load_assets(d));
+                *self.mem.borrow_mut() = design::Mem::default();
+            }
+            let hub_t = num(&st, &["t"]).unwrap_or(0.0);
+            if hub_t != self.reacted {
+                // a new state: the design's actions ("when this happens, do that")
+                self.reacted = hub_t;
+                for ask in design::react(d, &scene_st, &mut self.mem.borrow_mut(), t) {
+                    let kind = if ask.kind == "text" { "say" } else { ask.kind.as_str() };
+                    self.world.borrow_mut().fx(kind, &ask.text, false, t);
+                }
+            }
+        }
+        let bare = design.as_ref().map(|d| !d.1.get("city").and_then(Value::as_bool).unwrap_or(false)).unwrap_or(false);
         let private = get(&st, &["privacy"]).as_bool().unwrap_or(false) || get(&st, &["screencast"]).as_bool().unwrap_or(false);
         let heat = |v: f32| if v > 0.9 { pal.crit } else if v > 0.75 { pal.warn } else { pal.accent };
 
         // ---- the world, on a canvas under everything
         let (world, old, is_city, marks_out, st2, pal2) = (self.world.clone(), self.city.clone(), scene_name == "city", self.marks.clone(), st.clone(), pal);
+        let (design2, scene_st2, mem2, drawn_out) = (design.clone(), scene_st.clone(), self.mem.clone(), self.drawn.clone());
         let sky = canvas(
             |_, _, _| {},
             move |bounds, _, window, _| {
-                let marks = if is_city { city::paint(bounds, &mut old.borrow_mut(), &st2, &pal2, t, window) } else { scene::paint(bounds, &mut world.borrow_mut(), &st2, &pal2, t, sphere, window) };
+                let marks = if is_city { city::paint(bounds, &mut old.borrow_mut(), &st2, &pal2, t, window) } else { scene::paint(bounds, &mut world.borrow_mut(), &st2, &pal2, t, sphere, bare, window) };
+                if let Some((_, d)) = &design2 {
+                    let (ox, oy, w2, h2) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y), f32::from(bounds.size.width), f32::from(bounds.size.height));
+                    *drawn_out.borrow_mut() = design::paint(window, d, &scene_st2, &pal2, &mut mem2.borrow_mut(), t, ox, oy, w2, h2);
+                } else {
+                    *drawn_out.borrow_mut() = (Vec::new(), Vec::new());
+                }
                 *marks_out.borrow_mut() = marks;
             },
         )
@@ -475,16 +507,49 @@ impl Render for Pulse {
                     .child(if m.line.is_empty() { div() } else { div().text_size(px(12.0 * u)).text_color(col(pal.dim, 1.0)).child(m.line.clone()) }),
             );
         }
+        let mut scene_layer = div().absolute().size_full();
+        {
+            let drawn = self.drawn.borrow();
+            for pc in &drawn.1 {
+                if let Some(im) = self.assets.1.get(&pc.asset) {
+                    scene_layer = scene_layer.child(gpui::img(im.clone()).absolute().left(px(pc.x - pc.w / 2.0)).top(px(pc.y - pc.h / 2.0)).w(px(pc.w)).h(px(pc.h)).opacity(pc.a));
+                }
+            }
+            for wd in &drawn.0 {
+                scene_layer = scene_layer.child(
+                    div().absolute().left(px(wd.x - w * 0.3)).top(px(wd.y - wd.size * 0.7)).w(px(w * 0.6)).flex().justify_center().text_size(px(wd.size)).line_height(px(wd.size * 1.4)).font_weight(if wd.bold { FontWeight::EXTRA_BOLD } else { FontWeight::MEDIUM }).text_color(col(wd.c, wd.a)).child(wd.text.clone()),
+                );
+            }
+        }
         let status = match (&snap.at, &snap.error) {
             (None, Some(e)) => format!("waiting for the hub (omarchy-pulse): {e}"),
             (None, None) => "waiting for the hub (omarchy-pulse)…".to_string(),
             (Some(at), _) if at.elapsed() > Duration::from_secs(8) => "the hub stopped answering: showing the last it said".to_string(),
+            _ if snap.handwritten.as_deref() == Some(scene_name.as_str()) => format!("the scene \"{scene_name}\" is written in code: the web page runs it; here, the skyline"),
             _ => String::new(),
         };
         let foot = div().absolute().bottom(px(34.0 * u)).left(px(0.0)).w(px(w)).flex().justify_center().text_size(px(13.0 * u)).text_color(col(pal.warn, 0.9)).child(status);
 
-        div().relative().size_full().bg(col(pal.bg, 1.0)).font_family(self.font.clone()).text_size(px(15.0 * u)).text_color(col(pal.fg, 1.0)).child(sky).child(clock_el).child(tags).child(say_el).child(centre).child(left).child(right).child(ticker_el).child(foot)
+        div().relative().size_full().bg(col(pal.bg, 1.0)).font_family(self.font.clone()).text_size(px(15.0 * u)).text_color(col(pal.fg, 1.0)).child(sky).child(scene_layer).child(clock_el).child(tags).child(say_el).child(centre).child(left).child(right).child(ticker_el).child(foot)
     }
+}
+
+/// The pictures of a design: its assets are data: URLs (PNG, JPEG, WebP, GIF or SVG), so a scene stays one file.
+fn load_assets(design: &Value) -> std::collections::HashMap<String, std::sync::Arc<gpui::Image>> {
+    use base64::Engine;
+    let mut out = std::collections::HashMap::new();
+    if let Some(a) = design.get("assets").and_then(Value::as_object) {
+        for (id, v) in a.iter().take(40) {
+            let Some(url) = v.as_str() else { continue };
+            let Some((head, body)) = url.split_once(',') else { continue };
+            let format = if head.contains("svg") { gpui::ImageFormat::Svg } else if head.contains("jpeg") || head.contains("jpg") { gpui::ImageFormat::Jpeg } else if head.contains("webp") { gpui::ImageFormat::Webp } else if head.contains("gif") { gpui::ImageFormat::Gif } else { gpui::ImageFormat::Png };
+            let bytes = if head.contains("base64") { base64::engine::general_purpose::STANDARD.decode(body.trim()).ok() } else { Some(body.as_bytes().to_vec()) };
+            if let Some(b) = bytes {
+                out.insert(id.clone(), std::sync::Arc::new(gpui::Image::from_bytes(format, b)));
+            }
+        }
+    }
+    out
 }
 
 /// The weather code (WMO, as Open-Meteo gives it) in a word, as the web page says it.

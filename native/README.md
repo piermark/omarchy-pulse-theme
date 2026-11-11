@@ -4,7 +4,7 @@ A parallel renderer for Omarchy Pulse. The web page stays the default (and is wh
 paints the same wallpaper natively on the GPU, with no browser underneath. It reads the same hub: the same
 `omarchy-pulse` service, the same token and the same `pulse.toml`.
 
-**Status: 0.4, experimental; the goal is the same Pulse as the web page, function by function.**
+**Status: 0.5, experimental; the goal is the same Pulse as the web page, function by function.**
 
 Done, in the look of Pulse 1.8:
 
@@ -16,6 +16,9 @@ Done, in the look of Pulse 1.8:
 - the planes over you, the ISS, the Starlink train (it glides, a thread joins the row), a real launch (the rocket,
   its smoke, the stage separation, T+), fireworks, lightning, shooting stars and the words of an effect: the hub's
   live channel, as the web page hears it;
+- **the scenes made with the scene editor and the community's `.pulse` scenes** (blackout-room, your own): Pulse
+  1.7's design engine in Rust: every shape, the live data that moves them, repeats (one per agent, repo, core, panel
+  row), motions and keyframes, pictures and backgrounds, and the actions ("when this happens, do that");
 - your AI agents as drones; the grid, and the line of the machine's pulse;
 - the living city of the skyline: your repos as towers (as tall as the week's commits, a beacon for the CI, a crane
   while it runs), the datacenter as a district of halls, the car, the robots (your services), the calendar's trains,
@@ -24,9 +27,11 @@ Done, in the look of Pulse 1.8:
   gauge with their history, list, status, key and value rows, text) in their slots; the next launch at the bottom;
 - privacy: while the screen is shared your panels, the tags and the address say nothing.
 
-Still to port (the web page remains the complete Pulse): the scenes orbit, calm, hacker, noir, mars, monolith and
-the editor's own; charts, tables with more columns and images in panels; the other things the sphere shows in turn;
-sounds and the voice; clicks; the second monitor; pausing when a window covers it; eclipses and the seasons.
+Still to port (the web page remains the complete Pulse): the scenes orbit, calm, hacker, noir and the scenes in code
+(mars, monolith, the community's JavaScript ones: here they show the skyline and say so); a tint on a design's
+pictures and clicks on its shapes; charts, tables with more columns and images in panels; the other things the
+sphere shows in turn; sounds and the voice; clicks; the second monitor; pausing when a window covers it; eclipses and
+the seasons.
 
 `--scene city` keeps pulse-native's first world: a far city under a warm dusk.
 

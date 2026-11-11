@@ -312,7 +312,7 @@ pub struct PlaneMark {
 }
 
 /// Paints the world for the time `t` (seconds) and returns the planes' places for their tags.
-pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t: f64, sphere: bool, win: &mut Window) -> Vec<PlaneMark> {
+pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t: f64, sphere: bool, bare: bool, win: &mut Window) -> Vec<PlaneMark> {
     let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
     let (ox, oy) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
     let hz = h * HORIZON;
@@ -461,9 +461,9 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
     // ---- the near city: neon towers either side of the dome, their windows lit as the CPU works
     let cpu = (num(st, &["sys", "cpu"]).unwrap_or(0.0) as f32 / 100.0).clamp(0.0, 1.0);
     let hide = get(st, &["privacy"]).as_bool().unwrap_or(false) || get(st, &["screencast"]).as_bool().unwrap_or(false);
-    let taken = if sphere { 0 } else { crate::life::repos(win, st, pal, &frame, &mut marks, hide) };
+    let taken = if sphere || bare { 0 } else { crate::life::repos(win, st, pal, &frame, &mut marks, hide) };
     let mut r = Rand::new(77);
-    for i in 0..(if sphere { 0 } else { 16 }) {
+    for i in 0..(if sphere || bare { 0 } else { 16 }) {
         if i < taken {
             for _ in 0..3 { r.next(); }
             continue; // a repo's tower stands here
@@ -497,52 +497,56 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
             glow(win, x, by - bh * 0.14, h * 0.012, pal.ok, blink);
         }
     }
-    // ---- the centre: the dome of the skyline, or the whole sphere of Pulse turning over the horizon
-    let rr = if sphere { h * 0.19 } else { h * 0.135 };
-    let (dcx, dcy) = (ox + w / 2.0, if sphere { oy + hz - rr * 1.12 } else { oy + hz });
-    let arc = if sphere { std::f32::consts::TAU } else { std::f32::consts::PI };
-    if sphere {
-        glow(win, dcx, dcy, rr * 1.9, a2, 0.35);
-        disc(win, dcx, dcy, rr, mix(bg, a2, 0.10), 0.55);
-    } else {
-        gradient(win, dcx - rr, dcy - rr, rr * 2.0, rr, a2, 0.0, a2, 0.10);
-    }
-    if sphere {
-        led_sphere(win, dcx, dcy, rr, st, pal, tf, u);
-    } else {
-        let mut dome = PathBuilder::stroke(px((u * 1.4).max(1.0)));
-        for m in 0..=8 {
-            let kx = (m as f32 / 8.0 * std::f32::consts::PI + tf * if sphere { 0.25 } else { 0.08 }).cos(); // the meridians turn
-            for i in 0..=48 {
-                let a = i as f32 / 48.0 * arc;
-                let p = point(px(dcx + a.cos() * rr * kx), px(dcy - a.sin() * rr));
-                if i == 0 { dome.move_to(p) } else { dome.line_to(p) }
+    let (mut rr, mut dcx, mut dcy) = (0.0f32, ox + w / 2.0, oy + hz);
+    if !bare {
+        // ---- the centre: the dome of the skyline, or the whole sphere of Pulse turning over the horizon
+        rr = if sphere { h * 0.19 } else { h * 0.135 };
+        dcy = if sphere { oy + hz - rr * 1.12 } else { oy + hz };
+        dcx = ox + w / 2.0;
+        let arc = if sphere { std::f32::consts::TAU } else { std::f32::consts::PI };
+        if sphere {
+            glow(win, dcx, dcy, rr * 1.9, a2, 0.35);
+            disc(win, dcx, dcy, rr, mix(bg, a2, 0.10), 0.55);
+        } else {
+            gradient(win, dcx - rr, dcy - rr, rr * 2.0, rr, a2, 0.0, a2, 0.10);
+        }
+        if sphere {
+            led_sphere(win, dcx, dcy, rr, st, pal, tf, u);
+        } else {
+            let mut dome = PathBuilder::stroke(px((u * 1.4).max(1.0)));
+            for m in 0..=8 {
+                let kx = (m as f32 / 8.0 * std::f32::consts::PI + tf * if sphere { 0.25 } else { 0.08 }).cos(); // the meridians turn
+                for i in 0..=48 {
+                    let a = i as f32 / 48.0 * arc;
+                    let p = point(px(dcx + a.cos() * rr * kx), px(dcy - a.sin() * rr));
+                    if i == 0 { dome.move_to(p) } else { dome.line_to(p) }
+                }
+            }
+            let lats: Vec<f32> = if sphere { vec![-0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75] } else { vec![0.2, 0.4, 0.6, 0.8] };
+            for l in lats {
+                let a = l * std::f32::consts::FRAC_PI_2;
+                dome.move_to(point(px(dcx - a.cos() * rr), px(dcy - a.sin() * rr)));
+                dome.line_to(point(px(dcx + a.cos() * rr), px(dcy - a.sin() * rr)));
+            }
+            if let Ok(path) = dome.build() {
+                win.paint_path(path, col(a2, 0.55));
+            }
+            let mut rim = PathBuilder::stroke(px((u * 2.2).max(1.5)));
+            for i in 0..=72 {
+                let a = i as f32 / 72.0 * arc;
+                let p = point(px(dcx + a.cos() * rr), px(dcy - a.sin() * rr));
+                if i == 0 { rim.move_to(p) } else { rim.line_to(p) }
+            }
+            if let Ok(path) = rim.build() {
+                win.paint_path(path, col(pal.accent, 0.9));
             }
         }
-        let lats: Vec<f32> = if sphere { vec![-0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75] } else { vec![0.2, 0.4, 0.6, 0.8] };
-        for l in lats {
-            let a = l * std::f32::consts::FRAC_PI_2;
-            dome.move_to(point(px(dcx - a.cos() * rr), px(dcy - a.sin() * rr)));
-            dome.line_to(point(px(dcx + a.cos() * rr), px(dcy - a.sin() * rr)));
-        }
-        if let Ok(path) = dome.build() {
-            win.paint_path(path, col(a2, 0.55));
-        }
-        let mut rim = PathBuilder::stroke(px((u * 2.2).max(1.5)));
-        for i in 0..=72 {
-            let a = i as f32 / 72.0 * arc;
-            let p = point(px(dcx + a.cos() * rr), px(dcy - a.sin() * rr));
-            if i == 0 { rim.move_to(p) } else { rim.line_to(p) }
-        }
-        if let Ok(path) = rim.build() {
-            win.paint_path(path, col(pal.accent, 0.9));
-        }
+        rr = if sphere { rr * 1.05 } else { rr };
+        // (the drones below fly over its top either way: dcy - rr is the top of both)
     }
-    let rr = if sphere { rr * 1.05 } else { rr };
-    // (the drones below fly over its top either way: dcy - rr is the top of both)
     // ---- your AI agents: a drone each over the dome, its light in the colour of what it is doing
     let agents = list(st, &["agents"]);
-    let n_ag = agents.len().min(6);
+    let n_ag = if bare { 0 } else { agents.len().min(6) };
     for (i, a) in agents.iter().take(n_ag).enumerate() {
         let state = a.get("state").and_then(Value::as_str).unwrap_or("");
         let c = match state { "working" => pal.accent, "waiting" => pal.warn, "done" => pal.ok, "failed" => pal.crit, _ => pal.dim };
@@ -568,7 +572,7 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
         }
     }
 
-    if !sphere {
+    if !sphere && !bare {
         crate::life::paint(win, st, pal, &frame, &mut marks);
     }
     crate::life::balloon(win, st, pal, &frame, &mut marks);
