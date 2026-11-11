@@ -11,6 +11,7 @@
 
 mod city;
 mod hub;
+mod life;
 mod palette;
 mod scene;
 
@@ -470,8 +471,8 @@ impl Render for Pulse {
                     .border_color(col(m.c, 0.9))
                     .flex()
                     .flex_col()
-                    .child(div().font_weight(FontWeight::BOLD).text_color(col(pal.fg, 1.0)).child(m.title.clone()))
-                    .child(div().text_size(px(12.0 * u)).text_color(col(pal.dim, 1.0)).child(m.line.clone())),
+                    .child(if m.line.is_empty() { div().text_size(px(12.5 * u)).text_color(col(m.c, 1.0)).child(m.title.clone()) } else { div().font_weight(FontWeight::BOLD).text_color(col(pal.fg, 1.0)).child(m.title.clone()) })
+                    .child(if m.line.is_empty() { div() } else { div().text_size(px(12.0 * u)).text_color(col(pal.dim, 1.0)).child(m.line.clone()) }),
             );
         }
         let status = match (&snap.at, &snap.error) {

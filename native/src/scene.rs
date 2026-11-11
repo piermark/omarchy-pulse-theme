@@ -153,14 +153,14 @@ pub fn sky_xy(az: f32, el: f32, w: f32, hz: f32) -> Option<(f32, f32)> {
     Some((x, hz * 0.93 - (el.max(0.0) / 90.0).sqrt() * hz * 0.85))
 }
 
-fn rect(win: &mut Window, x: f32, y: f32, w: f32, h: f32, c: C, a: f32) {
+pub(crate) fn rect(win: &mut Window, x: f32, y: f32, w: f32, h: f32, c: C, a: f32) {
     if a <= 0.004 || w <= 0.0 || h <= 0.0 {
         return;
     }
     win.paint_quad(PaintQuad::new(Bounds::new(point(px(x), px(y)), size(px(w), px(h)))).background(col(c, a)));
 }
 
-fn disc(win: &mut Window, cx: f32, cy: f32, r: f32, c: C, a: f32) {
+pub(crate) fn disc(win: &mut Window, cx: f32, cy: f32, r: f32, c: C, a: f32) {
     if a <= 0.004 || r <= 0.0 {
         return;
     }
@@ -168,14 +168,14 @@ fn disc(win: &mut Window, cx: f32, cy: f32, r: f32, c: C, a: f32) {
 }
 
 /// A soft light: rings of the same colour, fainter as they widen.
-fn glow(win: &mut Window, cx: f32, cy: f32, r: f32, c: C, a: f32) {
+pub(crate) fn glow(win: &mut Window, cx: f32, cy: f32, r: f32, c: C, a: f32) {
     for i in 0..7 {
         let k = 1.0 - i as f32 / 7.0;
         disc(win, cx, cy, r * (1.0 - k * 0.86), c, a * 0.2 * (1.2 - k));
     }
 }
 
-fn gradient(win: &mut Window, x: f32, y: f32, w: f32, h: f32, top: C, ta: f32, bottom: C, ba: f32) {
+pub(crate) fn gradient(win: &mut Window, x: f32, y: f32, w: f32, h: f32, top: C, ta: f32, bottom: C, ba: f32) {
     let bg = linear_gradient(180.0, linear_color_stop(col(top, ta), 0.0), linear_color_stop(col(bottom, ba), 1.0));
     win.paint_quad(PaintQuad::new(Bounds::new(point(px(x), px(y)), size(px(w), px(h)))).background(bg));
 }
@@ -380,6 +380,8 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
         }
     }
 
+    let frame = crate::life::Frame { w, h, ox, oy, hz, u, t: tf, sky: [wn, wt, wd] };
+    crate::life::aurora(win, st, pal, &frame);
     // ---- your clouds, moving with your wind: slowly when there is almost none, but never standing still
     let toward = (wind_dir + 180.0).to_radians(); // the wind comes from windDir; east is on the left
     let mut vx = -toward.sin() * (wind / 60.0);
@@ -458,8 +460,14 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
     }
     // ---- the near city: neon towers either side of the dome, their windows lit as the CPU works
     let cpu = (num(st, &["sys", "cpu"]).unwrap_or(0.0) as f32 / 100.0).clamp(0.0, 1.0);
+    let hide = get(st, &["privacy"]).as_bool().unwrap_or(false) || get(st, &["screencast"]).as_bool().unwrap_or(false);
+    let taken = if sphere { 0 } else { crate::life::repos(win, st, pal, &frame, &mut marks, hide) };
     let mut r = Rand::new(77);
     for i in 0..(if sphere { 0 } else { 16 }) {
+        if i < taken {
+            for _ in 0..3 { r.next(); }
+            continue; // a repo's tower stands here
+        }
         let side = if i % 2 == 0 { -1.0 } else { 1.0 };
         let k = (i / 2) as f32;
         let x = ox + w / 2.0 + side * (w * 0.092 + k * w * 0.026 + r.next() * w * 0.006);
@@ -470,6 +478,7 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
         rect(win, x - bw / 2.0, by, bw, bh, body, 1.0);
         rect(win, x + bw * 0.2, by, bw * 0.3, bh, scale(body, 0.75), 1.0);
         rect(win, x - bw / 2.0, by, bw, (u * 1.6).max(1.0), pal.accent, 0.9);
+        gradient(win, x - bw / 2.0, oy + hz + u * 2.0, bw, bh * 0.55, pal.accent, 0.13, pal.accent, 0.0);
         rect(win, x - bw / 2.0, by, (u * 1.2).max(1.0), bh, pal.accent, 0.35);
         let (cw, ch) = (bw * 0.16, (u * 5.0).max(2.0));
         let rows = ((bh - ch * 2.0) / (ch * 2.2)) as i32;
@@ -559,6 +568,11 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
         }
     }
 
+    if !sphere {
+        crate::life::paint(win, st, pal, &frame, &mut marks);
+    }
+    crate::life::balloon(win, st, pal, &frame, &mut marks);
+    crate::life::banner(win, st, pal, &frame, &mut marks);
     // the line of the horizon: the machine's pulse, livelier with the CPU
     let _ = cpu;
     let cpu = (num(st, &["sys", "cpu"]).unwrap_or(0.0) as f32 / 100.0).clamp(0.0, 1.0);
@@ -788,12 +802,35 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
         if let Ok(path) = trail.build() {
             win.paint_path(path, col(pal.fg, 0.22));
         }
-        rect(win, ox + x - s, oy + y - s * 0.16, s * 2.0, s * 0.32, pal.fg, 0.95);
-        rect(win, ox + x - s * 0.25, oy + y - s * 0.75, s * 0.5, s * 1.5, pal.fg, 0.8);
+        let (px0, py0) = (ox + x, oy + y);
+        let mut body = PathBuilder::fill();
+        let pt = |fx: f32, fy: f32| point(px(px0 + dir * fx * s), px(py0 + fy * s));
+        body.move_to(pt(1.25, 0.0)); // the nose
+        body.line_to(pt(0.95, -0.13));
+        body.line_to(pt(0.25, -0.15));
+        body.line_to(pt(-0.35, -1.05)); // a wing, swept back
+        body.line_to(pt(-0.62, -1.05));
+        body.line_to(pt(-0.28, -0.15));
+        body.line_to(pt(-0.95, -0.12));
+        body.line_to(pt(-1.2, -0.45)); // the tail
+        body.line_to(pt(-1.35, -0.45));
+        body.line_to(pt(-1.2, 0.0));
+        body.line_to(pt(-1.35, 0.45));
+        body.line_to(pt(-1.2, 0.45));
+        body.line_to(pt(-0.95, 0.12));
+        body.line_to(pt(-0.28, 0.15));
+        body.line_to(pt(-0.62, 1.05));
+        body.line_to(pt(-0.35, 1.05));
+        body.line_to(pt(0.25, 0.15));
+        body.line_to(pt(0.95, 0.13));
+        body.close();
+        if let Ok(path) = body.build() {
+            win.paint_path(path, col(mix(pal.fg, [1.0, 1.0, 1.0], 0.4), 0.96));
+        }
         let blink = if (tf * 1.4).fract() < 0.12 { 1.0 } else { 0.0 };
-        disc(win, ox + x - s * 0.1, oy + y - s * 0.75, s * 0.18, [1.0, 0.25, 0.25], 0.95);
-        disc(win, ox + x - s * 0.1, oy + y + s * 0.75, s * 0.18, [0.3, 1.0, 0.45], 0.95);
-        disc(win, ox + x + dir * s, oy + y, s * 0.22, [1.0, 1.0, 1.0], blink);
+        glow(win, ox + x - dir * s * 0.48, oy + y - s * 1.05, s * 0.5, [1.0, 0.25, 0.25], 0.95);
+        glow(win, ox + x - dir * s * 0.48, oy + y + s * 1.05, s * 0.5, [0.3, 1.0, 0.45], 0.95);
+        glow(win, ox + x - dir * s * 1.2, oy + y, s * 0.9, [1.0, 1.0, 1.0], blink);
         if !privacy {
             let g = |k: &str| p.get(k).and_then(Value::as_str).unwrap_or("").to_string();
             let (flight, kind, from, to) = (g("flight"), g("type"), g("from"), g("to"));
@@ -804,7 +841,8 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
                 title = format!("{title} · {kind}");
             }
             let route = if !from.is_empty() && !to.is_empty() { format!("{from} → {to} · ") } else { String::new() };
-            marks.push(PlaneMark { c: pal.accent, x: (x + s * 2.2).clamp(w * 0.245, w * 0.62), y: y - s * 2.2, title, line: format!("{route}{} ft · {} kt", (ft as i64 / 100) * 100, kt as i64) });
+            let tx = if y < h * 0.27 && x > w * 0.33 && x < w * 0.64 { w * 0.645 } else { (x + s * 2.2).clamp(w * 0.245, w * 0.62) };
+            marks.push(PlaneMark { c: pal.accent, x: tx, y: (y - s * 1.2).max(h * 0.02), title, line: format!("{route}{} ft · {} kt", (ft as i64 / 100) * 100, kt as i64) });
         }
     }
     marks
