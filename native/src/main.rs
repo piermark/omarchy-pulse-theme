@@ -18,7 +18,7 @@ use gpui::{
     canvas, div, layer_shell::*, point, prelude::*, px, size, App, Bounds, Context, FontWeight, LinuxWindowBackground, QuitMode, SharedString, Size,
     Window, WindowBounds, WindowKind, WindowOptions,
 };
-use hub::{get, list, num, text, Shared};
+use hub::{get, list, num, text, FxQueue, Shared};
 use palette::{col, mix, Pal, C};
 use serde_json::Value;
 use std::cell::RefCell;
@@ -29,6 +29,9 @@ const FONT: &str = "CaskaydiaMono Nerd Font";
 
 struct Pulse {
     hub: Shared,
+    live: FxQueue,
+    /// --scene on the command line; empty = the hub's own (ui.scene), so both renderers show the same scene
+    forced: bool,
     world: Rc<RefCell<scene::World>>,
     city: Rc<RefCell<city::World>>,
     scene: String,
@@ -38,7 +41,7 @@ struct Pulse {
 }
 
 impl Pulse {
-    fn new(hub: Shared, fps: u64, font: String, scene: String, cx: &mut Context<Self>) -> Self {
+    fn new(hub: Shared, live: FxQueue, fps: u64, font: String, scene: String, cx: &mut Context<Self>) -> Self {
         let every = Duration::from_millis(1000 / fps.clamp(5, 60));
         cx.spawn(async move |this, cx| loop {
             if this.update(cx, |_, cx| cx.notify()).is_err() {
@@ -47,7 +50,7 @@ impl Pulse {
             cx.background_executor().timer(every).await;
         })
         .detach();
-        Pulse { hub, scene, city: Rc::new(RefCell::new(city::World::new())), world: Rc::new(RefCell::new(scene::World::new())), marks: Rc::new(RefCell::new(Vec::new())), started: Instant::now(), font: font.into() }
+        Pulse { hub, live, forced: !scene.is_empty(), scene, city: Rc::new(RefCell::new(city::World::new())), world: Rc::new(RefCell::new(scene::World::new())), marks: Rc::new(RefCell::new(Vec::new())), started: Instant::now(), font: font.into() }
     }
 }
 
@@ -157,14 +160,48 @@ fn ago(t: f64, now: f64) -> String {
     }
 }
 
+/// A small chart of a value's history: a line, and the area under it.
+fn spark(values: Vec<f32>, c: C, u: f32) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |b, _, window, _| {
+            let (lo, hi) = values.iter().fold((f32::MAX, f32::MIN), |(l, h2), v| (l.min(*v), h2.max(*v)));
+            let span = (hi - lo).max(1e-6);
+            let (x0, y0, w, h) = (f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.size.width), f32::from(b.size.height));
+            let at = |i: usize| point(px(x0 + w * i as f32 / (values.len() - 1) as f32), px(y0 + h - (values[i] - lo) / span * h * 0.9 - h * 0.05));
+            let mut line = gpui::PathBuilder::stroke(px((1.6 * u).max(1.0)));
+            let mut area = gpui::PathBuilder::fill();
+            area.move_to(point(px(x0), px(y0 + h)));
+            for i in 0..values.len() {
+                if i == 0 { line.move_to(at(i)) } else { line.line_to(at(i)) }
+                area.line_to(at(i));
+            }
+            area.line_to(point(px(x0 + w), px(y0 + h)));
+            area.close();
+            if let Ok(p) = area.build() {
+                window.paint_path(p, col(c, 0.14));
+            }
+            if let Ok(p) = line.build() {
+                window.paint_path(p, col(c, 0.95));
+            }
+        },
+    )
+    .w_full()
+    .h(px(34.0 * u))
+}
+
 /// One of your own panels (a `[[source]]` of pulse.toml), by its type: a stat or gauge, a list, key and value rows,
 /// a status board, or text. What this renderer can't draw yet shows its note, never an empty box.
-fn widget(wd: &Value, pal: &Pal, u: f32, now: f64, rows_max: usize) -> gpui::Div {
+fn widget(wd: &Value, pal: &Pal, u: f32, now: f64, rows_max: usize, private: bool) -> gpui::Div {
     let s = |k: &str| wd.get(k).and_then(Value::as_str).unwrap_or("").to_string();
     let data = wd.get("data").unwrap_or(&Value::Null);
     let title = if s("title").is_empty() { s("id") } else { s("title") };
     let mut p = panel(&title, pal, u);
     let dim = col(pal.dim, 1.0);
+    if private {
+        // someone else is looking at this screen: your panels keep their place and say nothing
+        return p.child(div().text_color(dim).child("•••  hidden while the screen is shared"));
+    }
     match s("type").as_str() {
         "stat" | "gauge" => {
             let v = data.get("value").and_then(Value::as_f64);
@@ -177,6 +214,10 @@ fn widget(wd: &Value, pal: &Pal, u: f32, now: f64, rows_max: usize) -> gpui::Div
             p = p.child(
                 div().flex().items_end().gap(px(8.0 * u)).child(div().text_size(px(44.0 * u)).line_height(px(46.0 * u)).text_color(col(pal.fg, 1.0)).child(shown)).child(div().pb(px(5.0 * u)).text_color(col(pal.accent, 1.0)).child(unit.clone())),
             );
+            let hist: Vec<f32> = data.get("history").and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.as_f64().map(|v| v as f32)).collect()).unwrap_or_default();
+            if hist.len() > 2 {
+                p = p.child(spark(hist, pal.accent, u));
+            }
             if s("type") == "gauge" || unit == "%" {
                 let f = (v.unwrap_or(0.0) as f32 / 100.0).clamp(0.0, 1.0);
                 p = p.child(div().h(px(8.0 * u)).bg(col(pal.dim, 0.35)).child(div().h_full().w(gpui::relative(f)).bg(col(pal.accent, 0.95))));
@@ -246,14 +287,23 @@ impl Render for Pulse {
         let u = (h / 1080.0).max(0.5);
         let t = self.started.elapsed().as_secs_f64();
         let (hm, sec, date) = clock(&st);
+        // the hub's effects (a launch, fireworks, lightning...), as the web page plays them
+        let fx: Vec<hub::Fx> = self.live.lock().map(|mut q| q.drain(..).collect()).unwrap_or_default();
+        for f in &fx {
+            self.world.borrow_mut().fx(&f.kind, &f.text, f.small, t);
+        }
+        let hub_scene = text(&st, &["ui", "scene"]);
+        let scene_name = if self.forced { self.scene.clone() } else if hub_scene.is_empty() { "skyline".to_string() } else { hub_scene };
+        let sphere = scene_name == "sphere";
+        let private = get(&st, &["privacy"]).as_bool().unwrap_or(false) || get(&st, &["screencast"]).as_bool().unwrap_or(false);
         let heat = |v: f32| if v > 0.9 { pal.crit } else if v > 0.75 { pal.warn } else { pal.accent };
 
         // ---- the world, on a canvas under everything
-        let (world, old, is_city, marks_out, st2, pal2) = (self.world.clone(), self.city.clone(), self.scene == "city", self.marks.clone(), st.clone(), pal);
+        let (world, old, is_city, marks_out, st2, pal2) = (self.world.clone(), self.city.clone(), scene_name == "city", self.marks.clone(), st.clone(), pal);
         let sky = canvas(
             |_, _, _| {},
             move |bounds, _, window, _| {
-                let marks = if is_city { city::paint(bounds, &mut old.borrow_mut(), &st2, &pal2, t, window) } else { scene::paint(bounds, &mut world.borrow_mut(), &st2, &pal2, t, window) };
+                let marks = if is_city { city::paint(bounds, &mut old.borrow_mut(), &st2, &pal2, t, window) } else { scene::paint(bounds, &mut world.borrow_mut(), &st2, &pal2, t, sphere, window) };
                 *marks_out.borrow_mut() = marks;
             },
         )
@@ -306,6 +356,10 @@ impl Render for Pulse {
                     .child(div().text_size(px(46.0 * u)).line_height(px(48.0 * u)).font_weight(FontWeight::BOLD).text_color(col(heat(cpu / 100.0), 1.0)).child(format!("{cpu:.0}")))
                     .child(div().pb(px(6.0 * u)).text_color(col(pal.accent, 1.0)).child("% cpu")),
             )
+            .child({
+                let hist: Vec<f32> = list(&st, &["hist", "cpu"]).iter().filter_map(|x| x.as_f64().map(|v| v as f32)).collect();
+                if hist.len() > 2 { div().child(spark(hist, pal.accent, u)) } else { div() }
+            })
             .child(core_row)
             .child(meter("ram", ram / 100.0, format!("{ram:.0}%"), heat(ram / 100.0), &pal, u))
             .child(meter("temp", (temp - 30.0) / 65.0, format!("{temp:.0}°C"), heat((temp - 30.0) / 65.0), &pal, u))
@@ -316,7 +370,7 @@ impl Render for Pulse {
         let network = panel("network", &pal, u)
             .child(div().flex().justify_between().child(div().text_color(col(pal.dim, 1.0)).child("↓ down")).child(div().text_color(col(pal.fg, 1.0)).child(bytes(num(&st, &["sys", "rx"]).unwrap_or(0.0)))))
             .child(div().flex().justify_between().child(div().text_color(col(pal.dim, 1.0)).child("↑ up")).child(div().text_color(col(pal.fg, 1.0)).child(bytes(num(&st, &["sys", "tx"]).unwrap_or(0.0)))))
-            .child(div().text_color(col(pal.dim, 1.0)).child(text(&st, &["sys", "ip"])));
+            .child(div().text_color(col(pal.dim, 1.0)).child(if private { "•••".to_string() } else { text(&st, &["sys", "ip"]) }));
         let now = num(&st, &["t"]).unwrap_or(0.0);
         let mut mine: Vec<&Value> = list(&st, &["widgets"]).iter().collect();
         mine.sort_by(|a, b| a.get("order").and_then(Value::as_f64).unwrap_or(50.0).total_cmp(&b.get("order").and_then(Value::as_f64).unwrap_or(50.0)));
@@ -324,7 +378,7 @@ impl Render for Pulse {
         let col_w = 396.0 * u;
         let mut left = div().absolute().left(px(36.0 * u)).top(px(72.0 * u)).w(px(col_w)).flex().flex_col().gap(px(24.0 * u)).child(system).child(network);
         for wd in mine.iter().filter(|w| slot(w) == "left").take(3) {
-            left = left.child(widget(wd, &pal, u, now, 4));
+            left = left.child(widget(wd, &pal, u, now, 4, private));
         }
 
         // ---- weather and the AI agents, on the right
@@ -356,9 +410,9 @@ impl Render for Pulse {
             );
         }
         for wd in mine.iter().filter(|w| slot(w) == "right").take(3) {
-            right = right.child(widget(wd, &pal, u, now, 4));
+            right = right.child(widget(wd, &pal, u, now, 4, private));
         }
-        if self.scene == "city" {
+        if scene_name == "city" {
             let agents = list(&st, &["agents"]);
             if !agents.is_empty() {
                 let mut p = panel("agents", &pal, u);
@@ -387,13 +441,18 @@ impl Render for Pulse {
         // ---- the centre: your first centre panel, under the clock (the AI brief, on the web page)
         let mut centre = div().absolute().top(px(h * 0.325)).left(px(w * 0.31)).w(px(w * 0.38)).flex().flex_col().gap(px(20.0 * u));
         if let Some(wd) = mine.iter().find(|w| slot(w) == "center") {
-            centre = centre.child(widget(wd, &pal, u, now, 4));
+            centre = centre.child(widget(wd, &pal, u, now, 4, private));
         }
         // ---- the line at the bottom: the next launch, as the web page's ticker says it
         let ticker = match (text(&st, &["space", "launch", "rocket"]), text(&st, &["space", "launch", "mission"]), text(&st, &["space", "launch", "status"])) {
             (r, m, s2) if !r.is_empty() => format!("◆ {r} · {m} · {s2}"),
             _ => String::new(),
         };
+        let say = self.world.borrow().say.clone().filter(|(at, _)| t - at < 6.0);
+        let say_el = div().absolute().top(px(h * 0.56)).left(px(0.0)).w(px(w)).flex().justify_center().child(match say {
+            Some((at, words)) => div().px(px(22.0 * u)).py(px(8.0 * u)).bg(col(pal.bg, 0.7)).border_1().border_color(col(pal.accent2, 0.8)).text_size(px(26.0 * u)).text_color(col(pal.fg, (1.0 - ((t - at) as f32 - 5.0).max(0.0)).clamp(0.0, 1.0))).child(words),
+            None => div(),
+        });
         let ticker_el = div().absolute().bottom(px(8.0 * u)).left(px(0.0)).w(px(w)).flex().justify_center().text_size(px(14.0 * u)).text_color(col(pal.fg, 0.8)).child(ticker);
 
         // ---- the planes' tags (from the last frame's positions), and one line that says what this is
@@ -423,7 +482,7 @@ impl Render for Pulse {
         };
         let foot = div().absolute().bottom(px(34.0 * u)).left(px(0.0)).w(px(w)).flex().justify_center().text_size(px(13.0 * u)).text_color(col(pal.warn, 0.9)).child(status);
 
-        div().relative().size_full().bg(col(pal.bg, 1.0)).font_family(self.font.clone()).text_size(px(15.0 * u)).text_color(col(pal.fg, 1.0)).child(sky).child(clock_el).child(tags).child(centre).child(left).child(right).child(ticker_el).child(foot)
+        div().relative().size_full().bg(col(pal.bg, 1.0)).font_family(self.font.clone()).text_size(px(15.0 * u)).text_color(col(pal.fg, 1.0)).child(sky).child(clock_el).child(tags).child(say_el).child(centre).child(left).child(right).child(ticker_el).child(foot)
     }
 }
 
@@ -453,7 +512,7 @@ struct Args {
 }
 
 fn args() -> Args {
-    let mut a = Args { window: false, url: format!("http://127.0.0.1:{}", hub::port()), fps: 20, font: FONT.to_string(), scene: "pulse".to_string() };
+    let mut a = Args { window: false, url: format!("http://127.0.0.1:{}", hub::port()), fps: 20, font: FONT.to_string(), scene: String::new() };
     let mut it = std::env::args().skip(1);
     while let Some(x) = it.next() {
         match x.as_str() {
@@ -467,7 +526,7 @@ fn args() -> Args {
                 std::process::exit(0);
             }
             _ => {
-                println!("pulse-native {}: Omarchy Pulse, drawn natively (Rust + GPUI)\n\n  pulse-native            the wallpaper (a Wayland layer-shell surface behind your windows)\n  pulse-native --window   an ordinary window\n  --url URL   the hub (default: http://127.0.0.1:PORT from PULSE_PORT or pulse.toml)\n  --fps N     frames a second, 5 to 60 (default 20)\n  --font NAME the font (default: {FONT})\n  --scene S   pulse (default: the look of Pulse 1.8) or city (pulse-native's first world)", env!("CARGO_PKG_VERSION"));
+                println!("pulse-native {}: Omarchy Pulse, drawn natively (Rust + GPUI)\n\n  pulse-native            the wallpaper (a Wayland layer-shell surface behind your windows)\n  pulse-native --window   an ordinary window\n  --url URL   the hub (default: http://127.0.0.1:PORT from PULSE_PORT or pulse.toml)\n  --fps N     frames a second, 5 to 60 (default 20)\n  --font NAME the font (default: {FONT})\n  --scene S   the scene: by default the hub's own ([pulse] scene); skyline, sphere, or city (pulse-native's first world)", env!("CARGO_PKG_VERSION"));
                 std::process::exit(if x == "--help" || x == "-h" { 0 } else { 2 });
             }
         }
@@ -478,6 +537,7 @@ fn args() -> Args {
 fn main() {
     let a = args();
     let shared = hub::start(a.url.clone(), hub::token());
+    let live = hub::start_live(a.url.clone(), hub::token());
     gpui_platform::application().with_quit_mode(QuitMode::LastWindowClosed).run(move |cx: &mut App| {
         let mut options = WindowOptions::new().titlebar(None).app_id(Some("omarchy-pulse-native".to_string()));
         options = if a.window {
@@ -496,8 +556,8 @@ fn main() {
                 }))
                 .linux_window_background(LinuxWindowBackground::Opaque)
         };
-        let (fps, font, scene, hub) = (a.fps, a.font.clone(), a.scene.clone(), shared.clone());
-        if let Err(e) = cx.open_window(options, move |_, cx| cx.new(|cx| Pulse::new(hub, fps, font, scene, cx))) {
+        let (fps, font, scene, hub, live) = (a.fps, a.font.clone(), a.scene.clone(), shared.clone(), live.clone());
+        if let Err(e) = cx.open_window(options, move |_, cx| cx.new(|cx| Pulse::new(hub, live, fps, font, scene, cx))) {
             eprintln!("pulse-native: could not open the wallpaper: {e}\n(it needs a Wayland compositor with wlr-layer-shell, such as Hyprland; try --window)");
             std::process::exit(1);
         }

@@ -4,16 +4,27 @@ A parallel renderer for Omarchy Pulse. The web page stays the default (and is wh
 paints the same wallpaper natively on the GPU, with no browser underneath. It reads the same hub: the same
 `omarchy-pulse` service, the same token and the same `pulse.toml`.
 
-**Status: 0.2, experimental.** Drawn so far, in the look of Pulse 1.8: the sky at its real hour (the web page's
-own three skies, mixed by the Sun's height), stars, the Moon with its phase and the Sun where they are, clouds that
-move with your wind, the far city, the neon towers and the dome, the grid running to the horizon and the line of the
-machine's pulse, rain leaning with the wind and snow, the planes over you with their tags, your AI agents as drones;
-the clock, the system, network and weather panels and **your own panels** (every `[[source]]`: stat, gauge, list,
-status, key and value rows, text) in their slots, in your Omarchy theme's colours.
+**Status: 0.3, experimental; the goal is the same Pulse as the web page, function by function.**
 
-Not yet: the other scenes (sphere, orbit, mars, monolith, the editor's), charts and images in panels, rockets,
-Starlink, the ISS, the datacenter district, effects, sounds, clicks, the second monitor, privacy when a window covers
-it. The web page remains the complete Pulse.
+Done, in the look of Pulse 1.8:
+
+- the sky at its real hour (the web page's own three skies, mixed by the Sun's height), stars, the Moon with its
+  phase, the Sun, clouds that move with your wind, rain leaning with the wind, snow;
+- the scenes `skyline` (far city, neon towers, the dome) and `sphere`: the LED sphere, after the Sphere of Las Vegas,
+  with Pulse 1.8's face (it thinks, needs you, is happy, sad, asleep, with your AI agents) and the CPU round it; by default the one your hub says
+  (`[pulse] scene`), so both renderers show the same;
+- the planes over you, the ISS, the Starlink train (it glides, a thread joins the row), a real launch (the rocket,
+  its smoke, the stage separation, T+), fireworks, lightning, shooting stars and the words of an effect: the hub's
+  live channel, as the web page hears it;
+- your AI agents as drones; the grid, and the line of the machine's pulse;
+- the clock, system (with its history), network, weather, and **your own panels** (every `[[source]]`: stat and
+  gauge with their history, list, status, key and value rows, text) in their slots; the next launch at the bottom;
+- privacy: while the screen is shared your panels, the tags and the address say nothing.
+
+Still to port (the web page remains the complete Pulse): the scenes orbit, calm, hacker, noir, mars, monolith and
+the editor's own; the datacenter district, robots, the car, cranes, the balloon and banner plane; repos as towers;
+charts, tables with more columns and images in panels; sounds and the voice; clicks; the second monitor; pausing when
+a window covers it; the calendar's trains, eclipses, the aurora, the seasons.
 
 `--scene city` keeps pulse-native's first world: a far city under a warm dusk.
 
@@ -29,7 +40,7 @@ cargo build --release
 ./target/release/pulse-native --window   # an ordinary window, to look at it
 ```
 
-Options: `--scene pulse|city`, `--url http://127.0.0.1:47800` (the hub; default from `PULSE_PORT` or `[pulse] port`), `--fps 20`,
+Options: `--scene skyline|sphere|city` (default: the hub's), `--url http://127.0.0.1:47800` (the hub; default from `PULSE_PORT` or `[pulse] port`), `--fps 20`,
 `--font "CaskaydiaMono Nerd Font"`.
 
 The hub must be running (`omarchy-pulse serve`, as the live wallpaper already does). While the web wallpaper is on,

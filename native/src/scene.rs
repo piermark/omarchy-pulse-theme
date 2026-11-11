@@ -45,6 +45,46 @@ pub struct World {
     pub clouds: Vec<Cloud>,
     pub drops: Vec<(f32, f32, f32, f32)>,
     pub last_t: f64,
+    /// where each Starlink satellite is drawn: it glides to where it really is
+    pub sl: Vec<Option<(f32, f32)>>,
+    pub iss: Option<(f32, f32)>,
+    pub iss_trail: Vec<(f32, f32)>,
+    /// rockets on their way up: (when it left, its name, a Starship?)
+    pub liftoffs: Vec<(f64, String, bool)>,
+    /// fireworks: (when, x, y, seed, small)
+    pub bursts: Vec<(f64, f32, f32, u64, bool)>,
+    pub flash: f64,
+    pub shooting: Vec<(f64, f32, f32)>,
+    /// the words of the last effect, and when
+    pub say: Option<(f64, String)>,
+    seed: u64,
+}
+
+impl World {
+    /// An effect from the hub: the same kinds the web page plays.
+    pub fn fx(&mut self, kind: &str, text: &str, small: bool, t: f64) {
+        self.seed = self.seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let mut r = Rand::new(self.seed);
+        match kind {
+            "launch" => {
+                let name = text.split(" · liftoff").next().unwrap_or(text).to_string();
+                let big = name.to_lowercase().contains("starship");
+                self.liftoffs.push((t, name, big));
+            }
+            "lightning" => self.flash = t,
+            "shooting" => self.shooting.push((t, 0.1 + r.next() * 0.5, 0.04 + r.next() * 0.12)),
+            "banner" | "tip" | "chime" | "text" | "flare" => {}
+            _ => {
+                let n = if small { 2 } else { 6 };
+                for i in 0..n {
+                    self.bursts.push((t + i as f64 * 0.45, 0.3 + r.next() * 0.4, 0.14 + r.next() * 0.26, (r.next() * 1e9) as u64, small));
+                }
+            }
+        }
+        if !text.is_empty() {
+            self.say = Some((t, text.chars().take(60).collect()));
+        }
+    }
 }
 
 impl World {
@@ -74,7 +114,7 @@ impl World {
             })
             .collect();
         let drops = (0..900).map(|_| (r.next(), r.next(), 0.5 + r.next() * 0.5, r.next())).collect();
-        World { stars, city, clouds, drops, last_t: 0.0 }
+        World { stars, city, clouds, drops, last_t: 0.0, sl: Vec::new(), iss: None, iss_trail: Vec::new(), liftoffs: Vec::new(), bursts: Vec::new(), flash: 0.0, shooting: Vec::new(), say: None, seed: 42 }
     }
 }
 
@@ -140,6 +180,128 @@ fn gradient(win: &mut Window, x: f32, y: f32, w: f32, h: f32, top: C, ta: f32, b
     win.paint_quad(PaintQuad::new(Bounds::new(point(px(x), px(y)), size(px(w), px(h)))).background(bg));
 }
 
+/// What the face on the sphere feels: your most urgent agent decides, as on the web page (faceMood).
+fn face_mood(st: &Value) -> &'static str {
+    if get(st, &["away"]).as_bool().unwrap_or(false) {
+        return "sleep";
+    }
+    if get(st, &["speaking"]).as_bool().unwrap_or(false) {
+        return "talk";
+    }
+    let rank = |s: &str| match s { "waiting" => 5, "failed" => 4, "working" => 3, "done" => 2, _ => 1 };
+    let best = list(st, &["agents"]).iter().filter_map(|a| a.get("state").and_then(Value::as_str)).max_by_key(|s| rank(s));
+    match best {
+        Some("working") => "think",
+        Some("waiting") => "alert",
+        Some("done") => "happy",
+        Some("failed") => "sad",
+        _ => "idle",
+    }
+}
+
+/// Is the point (x, y), in units of the face's size, on one of the face's lit features? Pulse 1.8's face (drawFace):
+/// two tall rounded eyes that blink, look up when it thinks, widen when it needs you; a mouth for every mood.
+fn face_lit(x: f32, y: f32, mood: &str, t: f32) -> bool {
+    let seg = |ax: f32, ay: f32, bx: f32, by: f32, th: f32| -> bool {
+        let (dx, dy) = (bx - ax, by - ay);
+        let k = (((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+        ((x - ax - dx * k).powi(2) + (y - ay - dy * k).powi(2)).sqrt() < th
+    };
+    let arc = |cx: f32, cy: f32, r: f32, a0: f32, a1: f32, th: f32| -> bool {
+        let (dx, dy) = (x - cx, y - cy);
+        let d = (dx * dx + dy * dy).sqrt();
+        let a = dy.atan2(dx).rem_euclid(std::f32::consts::TAU);
+        (d - r).abs() < th && a >= a0 && a <= a1
+    };
+    let pi = std::f32::consts::PI;
+    let th = 0.045;
+    let (mut eye_w, mut eye_h, gap) = (0.17, 0.30, 0.26);
+    let (mut look_x, mut look_y) = (0.0, 0.0);
+    if mood == "think" {
+        look_x = (t * 1.3).sin() * 0.05;
+        look_y = -0.05;
+    }
+    let blink = if (mood == "idle" || mood == "think") && (t % 4.2) < 0.13 { 0.12 } else { 1.0 };
+    if mood == "alert" {
+        eye_w *= 1.15;
+        eye_h *= 1.2;
+    }
+    for side in [-1.0f32, 1.0] {
+        let (ex, ey) = (side * gap + look_x, -0.08 + look_y);
+        let on = match mood {
+            "happy" => arc(ex, ey + 0.06, eye_w * 0.9, pi * 1.1, pi * 1.9, th),
+            "sleep" => arc(ex, ey - 0.03, eye_w * 0.75, pi * 0.15, pi * 0.85, th),
+            "sad" => seg(ex - eye_w * 0.7, ey - eye_w * 0.7, ex + eye_w * 0.7, ey + eye_w * 0.7, th) || seg(ex + eye_w * 0.7, ey - eye_w * 0.7, ex - eye_w * 0.7, ey + eye_w * 0.7, th),
+            _ => {
+                let hh = eye_h * blink;
+                seg(ex, ey - (hh - eye_w).max(0.0) / 2.0, ex, ey + (hh - eye_w).max(0.0) / 2.0, eye_w.min(hh) / 2.0) // a rounded bar
+            }
+        };
+        if on || (mood == "alert" && seg(ex - eye_w * 0.8, ey - eye_h * 0.85, ex + eye_w * 0.6, ey - eye_h, th * 0.8)) {
+            return true;
+        }
+    }
+    let my = 0.26;
+    match mood {
+        "sleep" => arc(0.0, my, 0.04, 0.0, std::f32::consts::TAU, th * 0.7),
+        "happy" => arc(0.0, my - 0.08, 0.16, pi * 0.15, pi * 0.85, th),
+        "sad" => arc(0.0, my + 0.08, 0.13, pi * 1.2, pi * 1.8, th),
+        "alert" => arc(0.0, my, 0.06, 0.0, std::f32::consts::TAU, th * 0.8),
+        "talk" => {
+            let o = (0.3 + 0.7 * (t * 9.0).sin().abs()) * 0.09;
+            (x / 0.1).powi(2) + ((y - my) / o).powi(2) < 1.0
+        }
+        "think" => {
+            if seg(-0.08, my, 0.08, my, th) {
+                return true;
+            }
+            (0..3).any(|i| {
+                let on = ((t * 2.2 - i as f32 * 0.33).rem_euclid(1.0)) < 0.5;
+                on && ((x - (0.55 + i as f32 * 0.13)).powi(2) + (y - (-0.45 - i as f32 * 0.08)).powi(2)).sqrt() < 0.05
+            })
+        }
+        _ => seg(-0.08, my, 0.08, my, th),
+    }
+}
+
+/// The LED sphere, after the Sphere of Las Vegas: a dark ball of thousands of LEDs, and only what is drawn lights up.
+/// Its face follows your AI agents; the CPU runs round its lower rows; a halo in its own colour, and its light on
+/// the floor.
+#[allow(clippy::too_many_arguments)]
+fn led_sphere(win: &mut Window, cx: f32, cy: f32, r: f32, st: &Value, pal: &Pal, t: f32, u: f32) {
+    let mood = face_mood(st);
+    let face_c = match mood { "alert" => pal.warn, "sad" => pal.crit, _ => mix(pal.warn, [1.0, 0.95, 0.4], 0.35) };
+    let cpu = (num(st, &["sys", "cpu"]).unwrap_or(0.0) as f32 / 100.0).clamp(0.0, 1.0);
+    glow(win, cx, cy, r * 1.8, face_c, 0.22);
+    glow(win, cx, cy + r * 1.16, r * 1.3, face_c, 0.18); // its light on the wet floor
+    disc(win, cx, cy, r * 1.012, mix(pal.accent, pal.bg, 0.4), 0.9);
+    disc(win, cx, cy, r, crate::palette::scale(pal.bg, 0.45), 1.0);
+    let rows = 46;
+    let dark = mix(pal.bg, pal.accent2, 0.30);
+    let pi = std::f32::consts::PI;
+    for row in 0..rows {
+        let phi = (row as f32 + 0.5) / rows as f32 * pi - pi / 2.0; // latitude, bottom to top
+        let n = ((rows as f32 * 2.0) * phi.cos()).round().max(4.0) as i32; // LEDs on the half we see... all round: 2n
+        for k in 0..n {
+            let lam = (k as f32 + 0.5) / n as f32 * pi - pi / 2.0; // the front half
+            let (x, y) = (phi.cos() * lam.sin(), -phi.sin());
+            let facing = phi.cos() * lam.cos(); // 1 at the centre, 0 at the edge: the curve
+            let s = 0.86; // the face's size, of the radius
+            let lit = face_lit(x / s, y / s, mood, t);
+            // the CPU as a ring of light running round the lower rows
+            let band = y > 0.62 && y < 0.80 && ((lam / pi + 0.5 + t * 0.06).rem_euclid(1.0)) < cpu;
+            let (c, a) = if lit { (face_c, 1.0) } else if band { (pal.accent, 0.85) } else { (dark, 0.55) };
+            let lr = (r * pi / rows as f32 * 0.34 * (0.55 + 0.45 * facing)).max(u * 0.8);
+            disc(win, cx + x * r, cy + y * r, lr, c, a * (0.30 + 0.70 * facing));
+            if lit && facing > 0.5 {
+                disc(win, cx + x * r, cy + y * r, lr * 2.1, face_c, 0.16);
+            }
+        }
+    }
+    // the glass: a soft light from above
+    gradient(win, cx - r * 0.55, cy - r * 0.92, r * 1.1, r * 0.5, [1.0, 1.0, 1.0], 0.05, [1.0, 1.0, 1.0], 0.0);
+}
+
 /// A plane on the screen: where, and what to write beside it (main.rs writes the text).
 pub struct PlaneMark {
     pub x: f32,
@@ -150,7 +312,7 @@ pub struct PlaneMark {
 }
 
 /// Paints the world for the time `t` (seconds) and returns the planes' places for their tags.
-pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t: f64, win: &mut Window) -> Vec<PlaneMark> {
+pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t: f64, sphere: bool, win: &mut Window) -> Vec<PlaneMark> {
     let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
     let (ox, oy) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
     let hz = h * HORIZON;
@@ -297,7 +459,7 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
     // ---- the near city: neon towers either side of the dome, their windows lit as the CPU works
     let cpu = (num(st, &["sys", "cpu"]).unwrap_or(0.0) as f32 / 100.0).clamp(0.0, 1.0);
     let mut r = Rand::new(77);
-    for i in 0..16 {
+    for i in 0..(if sphere { 0 } else { 16 }) {
         let side = if i % 2 == 0 { -1.0 } else { 1.0 };
         let k = (i / 2) as f32;
         let x = ox + w / 2.0 + side * (w * 0.092 + k * w * 0.026 + r.next() * w * 0.006);
@@ -326,36 +488,49 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
             glow(win, x, by - bh * 0.14, h * 0.012, pal.ok, blink);
         }
     }
-    // ---- the dome at the centre: the sphere of Pulse, as a wire of meridians and parallels
-    let rr = h * 0.135;
-    let (dcx, dcy) = (ox + w / 2.0, oy + hz);
-    gradient(win, dcx - rr, dcy - rr, rr * 2.0, rr, a2, 0.0, a2, 0.10);
-    let mut dome = PathBuilder::stroke(px((u * 1.4).max(1.0)));
-    for m in 0..=8 {
-        let kx = (m as f32 / 8.0 * std::f32::consts::PI + tf * 0.08).cos(); // the meridians turn slowly
-        for i in 0..=40 {
-            let a = i as f32 / 40.0 * std::f32::consts::PI;
-            let p = point(px(dcx + a.cos() * rr * kx), px(dcy - a.sin() * rr));
-            if i == 0 { dome.move_to(p) } else { dome.line_to(p) }
+    // ---- the centre: the dome of the skyline, or the whole sphere of Pulse turning over the horizon
+    let rr = if sphere { h * 0.19 } else { h * 0.135 };
+    let (dcx, dcy) = (ox + w / 2.0, if sphere { oy + hz - rr * 1.12 } else { oy + hz });
+    let arc = if sphere { std::f32::consts::TAU } else { std::f32::consts::PI };
+    if sphere {
+        glow(win, dcx, dcy, rr * 1.9, a2, 0.35);
+        disc(win, dcx, dcy, rr, mix(bg, a2, 0.10), 0.55);
+    } else {
+        gradient(win, dcx - rr, dcy - rr, rr * 2.0, rr, a2, 0.0, a2, 0.10);
+    }
+    if sphere {
+        led_sphere(win, dcx, dcy, rr, st, pal, tf, u);
+    } else {
+        let mut dome = PathBuilder::stroke(px((u * 1.4).max(1.0)));
+        for m in 0..=8 {
+            let kx = (m as f32 / 8.0 * std::f32::consts::PI + tf * if sphere { 0.25 } else { 0.08 }).cos(); // the meridians turn
+            for i in 0..=48 {
+                let a = i as f32 / 48.0 * arc;
+                let p = point(px(dcx + a.cos() * rr * kx), px(dcy - a.sin() * rr));
+                if i == 0 { dome.move_to(p) } else { dome.line_to(p) }
+            }
+        }
+        let lats: Vec<f32> = if sphere { vec![-0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75] } else { vec![0.2, 0.4, 0.6, 0.8] };
+        for l in lats {
+            let a = l * std::f32::consts::FRAC_PI_2;
+            dome.move_to(point(px(dcx - a.cos() * rr), px(dcy - a.sin() * rr)));
+            dome.line_to(point(px(dcx + a.cos() * rr), px(dcy - a.sin() * rr)));
+        }
+        if let Ok(path) = dome.build() {
+            win.paint_path(path, col(a2, 0.55));
+        }
+        let mut rim = PathBuilder::stroke(px((u * 2.2).max(1.5)));
+        for i in 0..=72 {
+            let a = i as f32 / 72.0 * arc;
+            let p = point(px(dcx + a.cos() * rr), px(dcy - a.sin() * rr));
+            if i == 0 { rim.move_to(p) } else { rim.line_to(p) }
+        }
+        if let Ok(path) = rim.build() {
+            win.paint_path(path, col(pal.accent, 0.9));
         }
     }
-    for l in 1..5 {
-        let a = l as f32 / 5.0 * std::f32::consts::FRAC_PI_2;
-        dome.move_to(point(px(dcx - a.cos() * rr), px(dcy - a.sin() * rr)));
-        dome.line_to(point(px(dcx + a.cos() * rr), px(dcy - a.sin() * rr)));
-    }
-    if let Ok(path) = dome.build() {
-        win.paint_path(path, col(a2, 0.55));
-    }
-    let mut rim = PathBuilder::stroke(px((u * 2.2).max(1.5)));
-    for i in 0..=60 {
-        let a = i as f32 / 60.0 * std::f32::consts::PI;
-        let p = point(px(dcx + a.cos() * rr), px(dcy - a.sin() * rr));
-        if i == 0 { rim.move_to(p) } else { rim.line_to(p) }
-    }
-    if let Ok(path) = rim.build() {
-        win.paint_path(path, col(pal.accent, 0.9));
-    }
+    let rr = if sphere { rr * 1.05 } else { rr };
+    // (the drones below fly over its top either way: dcy - rr is the top of both)
     // ---- your AI agents: a drone each over the dome, its light in the colour of what it is doing
     let agents = list(st, &["agents"]);
     let n_ag = agents.len().min(6);
@@ -378,7 +553,10 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
         glow(win, x, y + ds * 0.1, ds * 2.2, c, pulse);
         let name = a.get("name").and_then(Value::as_str).unwrap_or("agent").to_string();
         let what = a.get("text").and_then(Value::as_str).unwrap_or("").chars().take(28).collect::<String>();
+        let hide = get(st, &["privacy"]).as_bool().unwrap_or(false) || get(st, &["screencast"]).as_bool().unwrap_or(false);
+        if !hide {
         marks.push(PlaneMark { c, x: (x - w * 0.05).clamp(w * 0.245, w * 0.62), y: y + ds * 1.2, title: format!("● {name}"), line: if what.is_empty() { state.to_string() } else { format!("{state} · {what}") } });
+        }
     }
 
     // the line of the horizon: the machine's pulse, livelier with the CPU
@@ -432,8 +610,172 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
         }
     }
 
-    // ---- the planes over you: where they really are, their lights, a short trail
     let privacy = get(st, &["privacy"]).as_bool().unwrap_or(false) || get(st, &["screencast"]).as_bool().unwrap_or(false);
+    // ---- the ISS when it is over you: a bright point with its panels, and where it has just been
+    match (num(st, &["space", "iss", "az"]), num(st, &["space", "iss", "el"])) {
+        (Some(az), Some(el)) => {
+            let tx = w / 2.0 + ((az as f32 - 180.0) / 90.0).clamp(-1.05, 1.05) * w * 0.44;
+            let ty = hz - h * 0.05 - (el as f32 / 90.0) * hz * 0.6;
+            let p = world.iss.map(|q| (q.0 + (tx - q.0) * 0.08, q.1 + (ty - q.1) * 0.08)).unwrap_or((tx, ty));
+            world.iss = Some(p);
+            world.iss_trail.push(p);
+            if world.iss_trail.len() > 60 {
+                world.iss_trail.remove(0);
+            }
+            let mut tr = PathBuilder::stroke(px((u * 1.5).max(1.0)));
+            for (i, q) in world.iss_trail.iter().enumerate() {
+                let pt = point(px(ox + q.0), px(oy + q.1));
+                if i == 0 { tr.move_to(pt) } else { tr.line_to(pt) }
+            }
+            if world.iss_trail.len() > 2 {
+                if let Ok(path) = tr.build() {
+                    win.paint_path(path, col(pal.fg, 0.3));
+                }
+            }
+            let s = h * 0.01;
+            glow(win, ox + p.0, oy + p.1, s * 3.0, [1.0, 1.0, 0.9], 0.9);
+            rect(win, ox + p.0 - s * 1.6, oy + p.1 - s * 0.25, s * 3.2, s * 0.5, pal.accent, 0.9);
+            disc(win, ox + p.0, oy + p.1, s * 0.5, [1.0, 1.0, 1.0], 1.0);
+            let alt = num(st, &["space", "iss", "alt"]).unwrap_or(420.0);
+            marks.push(PlaneMark { c: pal.warn, x: (p.0 + s * 2.5).clamp(w * 0.245, w * 0.62), y: p.1 - s * 3.0, title: "ISS".into(), line: format!("{alt:.0} km · {el:.0}° up") });
+        }
+        _ => {
+            world.iss = None;
+            world.iss_trail.clear();
+        }
+    }
+    // ---- the Starlink train really in your sky: it glides, a thread joins the row, each one glints
+    let sats = list(st, &["starlink", "sats"]);
+    world.sl.resize(sats.len(), None);
+    let mut pts: Vec<(f32, f32)> = Vec::new();
+    for (i, sat) in sats.iter().enumerate() {
+        let (Some(az), Some(el)) = (sat.get("az").and_then(Value::as_f64), sat.get("el").and_then(Value::as_f64)) else { world.sl[i] = None; continue };
+        if el < 10.0 {
+            world.sl[i] = None;
+            continue;
+        }
+        let Some(p) = sky_xy(az as f32, el as f32, w, hz) else { world.sl[i] = None; continue };
+        let q = match world.sl[i] {
+            Some(q) if (q.0 - p.0).abs() < w * 0.2 => (q.0 + (p.0 - q.0) * 0.025, q.1 + (p.1 - q.1) * 0.025),
+            _ => p,
+        };
+        world.sl[i] = Some(q);
+        pts.push(q);
+    }
+    if !pts.is_empty() {
+        let mut thread = PathBuilder::stroke(px((u * 1.0).max(1.0)));
+        for (i, q) in pts.iter().enumerate() {
+            let pt = point(px(ox + q.0), px(oy + q.1));
+            if i == 0 { thread.move_to(pt) } else { thread.line_to(pt) }
+        }
+        if pts.len() > 1 {
+            if let Ok(path) = thread.build() {
+                win.paint_path(path, col(pal.fg, 0.22));
+            }
+        }
+        for (i, q) in pts.iter().enumerate() {
+            let glint = 0.6 + 0.4 * (tf * 3.0 - i as f32 * 0.7).sin().max(0.0);
+            let s = h * if i == 0 { 0.0042 } else { 0.003 };
+            glow(win, ox + q.0, oy + q.1, s * 3.5, [1.0, 1.0, 1.0], 0.5 * glint);
+            disc(win, ox + q.0, oy + q.1, s, [1.0, 1.0, 1.0], glint);
+        }
+        let head = pts[0];
+        marks.push(PlaneMark { c: pal.fg, x: (head.0 + h * 0.02).clamp(w * 0.245, w * 0.62), y: head.1 - h * 0.05, title: "STARLINK TRAIN".into(), line: format!("{} satellites", pts.len()) });
+    }
+    // ---- shooting stars, fireworks and lightning: the hub's effects
+    world.shooting.retain(|s0| t - s0.0 < 1.2);
+    for s0 in &world.shooting {
+        let k = ((t - s0.0) / 1.2) as f32;
+        let (x, y) = (ox + (s0.1 + k * 0.22) * w, oy + (s0.2 + k * 0.07) * h);
+        let mut p = PathBuilder::stroke(px((u * 2.0).max(1.2)));
+        p.move_to(point(px(x - w * 0.05), px(y - h * 0.016)));
+        p.line_to(point(px(x), px(y)));
+        if let Ok(path) = p.build() {
+            win.paint_path(path, col([1.0, 0.97, 0.9], 0.9 * (1.0 - k)));
+        }
+    }
+    world.bursts.retain(|b| t - b.0 < 2.6);
+    for b in &world.bursts {
+        let age = (t - b.0) as f32;
+        if age < 0.0 {
+            continue;
+        }
+        let k = age / 2.6;
+        let mut r = Rand::new(b.3);
+        let c = [pal.accent, pal.accent2, pal.warn, pal.ok][(b.3 % 4) as usize];
+        let (bx, by) = (ox + b.1 * w, oy + b.2 * h);
+        let reach = h * if b.4 { 0.07 } else { 0.15 } * (1.0 - (1.0 - k).powi(3));
+        for _ in 0..if b.4 { 40 } else { 90 } {
+            let (a, sp) = (r.next() * 6.283, 0.35 + r.next() * 0.65);
+            let (x, y) = (bx + a.cos() * reach * sp, by + a.sin() * reach * sp + k * k * h * 0.05);
+            disc(win, x, y, (u * (2.6 - 1.8 * k)).max(1.0), mix(c, [1.0, 1.0, 1.0], (1.0 - k) * 0.6), (1.0 - k).powf(1.5));
+        }
+        glow(win, bx, by, h * 0.12 * (1.0 - k), c, 0.5 * (1.0 - k * 3.0).max(0.0));
+    }
+    let fl = (t - world.flash) as f32;
+    if world.flash > 0.0 && fl < 0.5 {
+        rect(win, ox, oy, w, h, [1.0, 1.0, 1.0], 0.35 * (1.0 - fl / 0.5) * if (fl * 20.0) as i32 % 2 == 0 { 1.0 } else { 0.4 });
+    }
+    // ---- a real launch: a rocket you can recognise climbs from your horizon (Pulse 1.8's liftoff)
+    world.liftoffs.retain(|l| t - l.0 < 26.0);
+    for (li, l) in world.liftoffs.iter().enumerate() {
+        let age = (t - l.0) as f32;
+        let big = l.2;
+        let lx = ox + w * (0.66 + 0.05 * li as f32);
+        let rh = h * if big { 0.075 } else { 0.058 };
+        let rw = rh * if big { 0.13 } else { 0.085 };
+        let climb = h * 0.0052 * age * age + h * 0.004 * age;
+        let ry = oy + hz - climb; // the base of the rocket
+        let lean = (age - 6.0).max(0.0) * rw * 0.5;
+        let x = lx - lean;
+        // pad smoke, rolling outwards
+        if age < 9.0 {
+            for i in 0..9 {
+                let k = (age / 9.0).min(1.0);
+                let sx = (i as f32 - 4.0) * rh * 0.22 * (1.0 + age * 0.35);
+                disc(win, lx + sx, oy + hz - rh * 0.05, rh * (0.16 + 0.05 * ((i * 7) % 3) as f32) * (1.0 + age * 0.3), mix(pal.fg, bg, 0.35), 0.22 * (1.0 - k));
+            }
+        }
+        // the trail: smoke that widens and fades behind it
+        for i in 0..22 {
+            let back = i as f32 / 22.0;
+            let ty = ry + back * climb.min(h * 0.5);
+            if ty > oy + hz {
+                break;
+            }
+            disc(win, x + lean * back + (tf * 2.0 + i as f32).sin() * rw * back * 2.0, ty, rw * (0.7 + back * 3.2), mix(pal.fg, mix(a2, pal.warn, 0.5), wt * 0.6), 0.26 * (1.0 - back));
+        }
+        // the flame: a white heart, then warm, flickering
+        let fh = rh * (0.9 + 0.3 * (tf * 40.0).sin());
+        gradient(win, x - rw * 0.45, ry, rw * 0.9, fh, [1.0, 0.98, 0.9], 0.95, pal.warn, 0.0);
+        glow(win, x, ry + rh * 0.1, rh * 1.4, pal.warn, 0.7);
+        let sep = age > 9.5;
+        // the second stage (and the whole rocket before the separation)
+        let hull = if big { [0.78, 0.80, 0.84] } else { [0.95, 0.95, 0.96] };
+        let (body_y, body_h) = if sep { (ry - rh * 0.42, rh * 0.42) } else { (ry - rh, rh) };
+        rect(win, x - rw / 2.0, body_y, rw, body_h, hull, 1.0);
+        rect(win, x, body_y, rw / 2.0, body_h, scale(hull, 0.82), 1.0);
+        disc(win, x, body_y, rw / 2.0, hull, 1.0); // the fairing
+        if !big && !sep {
+            rect(win, x - rw / 2.0, ry - rh * 0.6, rw, rh * 0.07, [0.1, 0.1, 0.12], 1.0); // the black interstage
+            rect(win, x - rw * 0.9, ry - rh * 0.1, rw * 0.4, rh * 0.1, [0.15, 0.15, 0.17], 1.0);
+            rect(win, x + rw * 0.5, ry - rh * 0.1, rw * 0.4, rh * 0.1, [0.15, 0.15, 0.17], 1.0);
+        }
+        if sep {
+            // the booster comes off and falls back
+            let fa = age - 9.5;
+            let by = ry + rh * 0.1 + fa * fa * h * 0.004;
+            if by < oy + hz {
+                rect(win, x + fa * rw * 1.2 - rw / 2.0, by, rw, rh * 0.58, scale(hull, 0.9), 0.95);
+            }
+        }
+        let phase = if age < 5.0 { "liftoff" } else if age < 9.5 { "max Q" } else { "stage separation" };
+        if !privacy {
+            marks.push(PlaneMark { c: pal.warn, x: (x - ox + rh * 0.5).clamp(w * 0.245, w * 0.70), y: (ry - oy - rh * 1.2).max(h * 0.03), title: l.1.to_uppercase(), line: format!("T+00:{:02} · {phase}", age as i32) });
+        }
+    }
+
+    // ---- the planes over you: where they really are, their lights, a short trail
     for p in list(st, &["sky"]).iter().take(6) {
         let (Some(az), Some(el)) = (p.get("az").and_then(Value::as_f64), p.get("el").and_then(Value::as_f64)) else { continue };
         let Some((x, y)) = sky_xy(az as f32, el as f32, w, hz) else { continue };

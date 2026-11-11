@@ -18,6 +18,15 @@ pub struct Snapshot {
 
 pub type Shared = Arc<Mutex<Snapshot>>;
 
+/// An effect the hub asked for (a launch, fireworks, lightning...): what, and its words.
+#[derive(Clone, Debug)]
+pub struct Fx {
+    pub kind: String,
+    pub text: String,
+    pub small: bool,
+}
+pub type FxQueue = Arc<Mutex<Vec<Fx>>>;
+
 pub fn config_dir() -> PathBuf {
     if let Ok(x) = std::env::var("XDG_CONFIG_HOME") {
         if !x.is_empty() {
@@ -72,6 +81,45 @@ pub fn start(base: String, token: String) -> Shared {
         })
         .expect("the hub thread");
     shared
+}
+
+/// The hub's live channel (/api/live, server-sent events): the effects, as the web page hears them. It reconnects
+/// by itself; only effects asked after this program started are played.
+pub fn start_live(base: String, token: String) -> FxQueue {
+    let q: FxQueue = Arc::new(Mutex::new(Vec::new()));
+    let out = q.clone();
+    std::thread::Builder::new()
+        .name("pulse-live".into())
+        .spawn(move || {
+            use std::io::{BufRead, BufReader};
+            let agent = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(4)).build();
+            let url = format!("{base}/api/live?fx=-1&token={token}");
+            loop {
+                if let Ok(resp) = agent.get(&url).call() {
+                    for line in BufReader::new(resp.into_reader()).lines() {
+                        let Ok(line) = line else { break };
+                        let Some(data) = line.strip_prefix("data: ") else { continue };
+                        let Ok(v) = serde_json::from_str::<Value>(data) else { continue };
+                        let fx: Vec<Fx> = list(&v, &["fx"])
+                            .iter()
+                            .map(|f| Fx { kind: text(f, &["kind"]), text: text(f, &["text"]), small: get(f, &["small"]).as_bool().unwrap_or(false) })
+                            .collect();
+                        if !fx.is_empty() {
+                            if let Ok(mut g) = out.lock() {
+                                g.extend(fx);
+                                let n = g.len();
+                                if n > 32 {
+                                    g.drain(0..n - 32);
+                                }
+                            }
+                        }
+                    }
+                }
+                std::thread::sleep(Duration::from_secs(3));
+            }
+        })
+        .expect("the live thread");
+    q
 }
 
 // ---- small readers over the state, so a missing field is a default and never a crash
