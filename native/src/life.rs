@@ -323,6 +323,25 @@ pub fn paint(win: &mut Window, st: &Value, pal: &Pal, f: &Frame, marks: &mut Vec
     car(win, st, pal, f, marks);
     robots(win, st, pal, f, marks, private);
     candles(win, st, pal, f, marks, private);
+    // the energy of the house: what the Sun gives, what the grid gives or takes
+    if let Some(solar) = num(st, &["energy", "solar"]) {
+        let grid = num(st, &["energy", "grid"]).unwrap_or(0.0);
+        let load = num(st, &["energy", "load"]).unwrap_or(0.0);
+        label(marks, f, f.w * 0.505, f.hz + f.h * 0.118, pal.warn, format!("☀ {:.1} kW · home {:.1} kW · grid {:+.1} kW", solar / 1000.0, load / 1000.0, grid / 1000.0));
+    }
+    // the devices of your network: a light each along the kerb, brighter when one is new
+    let lan = list(st, &["lan"]);
+    for (i, d) in lan.iter().take(10).enumerate() {
+        let x = f.ox + f.w * (0.53 + 0.019 * i as f32);
+        let y = f.oy + f.hz + f.h * 0.165;
+        let new = get(d, &["new"]).as_bool().unwrap_or(false);
+        let c = if new { pal.warn } else { pal.accent };
+        glow(win, x, y, f.h * 0.008, c, if new { 0.6 + 0.4 * (f.t * 5.0).sin() } else { 0.7 });
+        disc(win, x, y, (f.u * 2.2).max(1.2), c, 1.0);
+        if !private && new {
+            label(marks, f, x - f.ox - f.w * 0.012, y - f.oy + f.h * 0.006, if new { pal.warn } else { pal.dim }, text(d, &["name"]).chars().take(10).collect());
+        }
+    }
     let up = num(st, &["updates", "n"]).unwrap_or(0.0);
     if up > 0.0 {
         let kernel = if get(st, &["updates", "kernel"]).as_bool().unwrap_or(false) { " · new kernel" } else { "" };

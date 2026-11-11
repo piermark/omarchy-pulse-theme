@@ -4,7 +4,7 @@ A parallel renderer for Omarchy Pulse. The web page stays the default (and is wh
 paints the same wallpaper natively on the GPU, with no browser underneath. It reads the same hub: the same
 `omarchy-pulse` service, the same token and the same `pulse.toml`.
 
-**Status: 0.5, experimental; the goal is the same Pulse as the web page, function by function.**
+**Status: 0.6, experimental; the goal is the same Pulse as the web page, function by function.**
 
 Done, in the look of Pulse 1.8:
 
@@ -25,13 +25,20 @@ Done, in the look of Pulse 1.8:
   the candles of what expires, the tips' balloon, the banner plane, the aurora with a solar storm;
 - the clock, system (with its history), network, weather, and **your own panels** (every `[[source]]`: stat and
   gauge with their history, list, status, key and value rows, text) in their slots; the next launch at the bottom;
+- the real stars with their constellations joined and named, and the planets; the energy of the house; the devices
+  of your network;
+- the whole weather panel (the next hours, sunrise and sunset, the air); tables with more columns, charts and
+  pictures in your panels; the ticker going through its items;
+- focus (the time left under the clock), a meeting (effects are quiet), away (the city sleeps); `motion =
+  "reduced"`; the hub's own `fps`;
 - privacy: while the screen is shared your panels, the tags and the address say nothing.
 
 Still to port (the web page remains the complete Pulse): the scenes orbit, calm, hacker, noir and the scenes in code
-(mars, monolith, the community's JavaScript ones: here they show the skyline and say so); a tint on a design's
-pictures and clicks on its shapes; charts, tables with more columns and images in panels; the other things the
-sphere shows in turn; sounds and the voice; clicks; the second monitor; pausing when a window covers it; eclipses and
-the seasons.
+(mars, monolith, the community's JavaScript ones: here they show the skyline and say so); your own wallpaper behind
+the scene; a tint on a design's pictures; the other things the sphere shows in turn and its gaze; clicks; sounds, the
+voice and the music; the second monitor; pausing when a window covers it; the NOC mode; eclipses, the seasons,
+storms over failing services, earthquakes, the garden; the saved layout of the panels; starting in place of the web
+wallpaper.
 
 `--scene city` keeps pulse-native's first world: a far city under a warm dusk.
 

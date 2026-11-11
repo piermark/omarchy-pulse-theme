@@ -319,7 +319,10 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
     let u = h / 1080.0;
     let dt = if world.last_t > 0.0 { ((t - world.last_t) as f32).clamp(0.0, 0.25) } else { 0.0 };
     world.last_t = t;
-    let tf = t as f32;
+    // [pulse] motion = "reduced": the world stands still (the data still moves it)
+    let still = get(st, &["ui", "motion"]).as_str() == Some("reduced");
+    let tf = if still { 0.0 } else { t as f32 };
+    let dt = if still { 0.0 } else { dt };
     let [wn, wt, wd] = sky_weights(st);
     let cloud = (num(st, &["weather", "cloud"]).unwrap_or(0.0) as f32 / 100.0).clamp(0.0, 1.0);
     let rain = num(st, &["weather", "rain"]).unwrap_or(0.0) as f32;
@@ -348,6 +351,64 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
             let tw = 0.72 + 0.28 * (tf * (0.5 + s.2) + s.3).sin();
             let z = (u * (0.8 + s.2 * 1.3)).max(1.0);
             rect(win, ox + s.0 * w, oy + s.1 * hz * 0.96, z, z, pal.fg, starry * s.2 * tw * (1.0 - s.1 * 0.6));
+        }
+    }
+
+    // ---- the real sky over you: the bright stars where they are, their constellations joined and named, the planets
+    if starry > 0.05 {
+        let stars = list(st, &["night", "stars"]);
+        let pos: Vec<Option<(f32, f32)>> = stars.iter().map(|s0| match (s0.get("az").and_then(Value::as_f64), s0.get("el").and_then(Value::as_f64)) {
+            (Some(az), Some(el)) => sky_xy(az as f32, el as f32, w, hz),
+            _ => None,
+        }).collect();
+        let mut lines = PathBuilder::stroke(px((u * 1.0).max(1.0)));
+        let mut any = false;
+        for l in list(st, &["night", "lines"]) {
+            let (Some(a), Some(b)) = (l.get(0).and_then(Value::as_u64), l.get(1).and_then(Value::as_u64)) else { continue };
+            if let (Some(Some(pa)), Some(Some(pb))) = (pos.get(a as usize), pos.get(b as usize)) {
+                lines.move_to(point(px(ox + pa.0), px(oy + pa.1)));
+                lines.line_to(point(px(ox + pb.0), px(oy + pb.1)));
+                any = true;
+            }
+        }
+        if any {
+            if let Ok(path) = lines.build() {
+                win.paint_path(path, col(pal.accent, 0.22 * starry));
+            }
+        }
+        for (i, s0) in stars.iter().enumerate() {
+            let Some(Some(p)) = pos.get(i) else { continue };
+            let mag = s0.get("m").and_then(Value::as_f64).unwrap_or(2.0) as f32;
+            let br = (1.0 - (mag + 1.0) / 5.0).clamp(0.25, 1.0);
+            let tw = 0.8 + 0.2 * (tf * 1.7 + i as f32).sin();
+            glow(win, ox + p.0, oy + p.1, u * 7.0 * br, [1.0, 0.98, 0.92], 0.5 * starry * br);
+            disc(win, ox + p.0, oy + p.1, (u * 1.9 * br).max(1.0), [1.0, 0.98, 0.92], starry * tw);
+        }
+        for nm in list(st, &["night", "names"]) {
+            let idx: Vec<usize> = nm.get("i").and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.as_u64().map(|v| v as usize)).collect()).unwrap_or_default();
+            let pts: Vec<(f32, f32)> = idx.iter().filter_map(|i| pos.get(*i).copied().flatten()).collect();
+            if pts.len() >= 2 {
+                let (cx0, cy0) = (pts.iter().map(|p| p.0).sum::<f32>() / pts.len() as f32, pts.iter().map(|p| p.1).sum::<f32>() / pts.len() as f32);
+                if cy0 < h * 0.32 && cx0 > w * 0.34 && cx0 < w * 0.66 {
+                    continue; // never over the clock
+                }
+                marks.push(PlaneMark { c: mix(pal.accent, pal.bg, 0.35), x: cx0.clamp(w * 0.245, w * 0.70), y: cy0 + h * 0.012, title: nm.get("n").and_then(Value::as_str).unwrap_or("").to_string(), line: String::new() });
+            }
+        }
+    }
+    for pl in list(st, &["night", "planets"]) {
+        let (Some(az), Some(el)) = (pl.get("az").and_then(Value::as_f64), pl.get("el").and_then(Value::as_f64)) else { continue };
+        let Some(p) = sky_xy(az as f32, el as f32, w, hz) else { continue };
+        let name = pl.get("n").and_then(Value::as_str).unwrap_or("");
+        let c = match name { "mars" => [1.0, 0.55, 0.4], "venus" => [1.0, 1.0, 0.9], "jupiter" => [1.0, 0.9, 0.75], "saturn" => [0.95, 0.85, 0.6], _ => [0.9, 0.9, 1.0] };
+        let a = (wn + wt * 0.6) * (1.0 - cloud * 0.7);
+        glow(win, ox + p.0, oy + p.1, u * 10.0, c, 0.6 * a);
+        disc(win, ox + p.0, oy + p.1, (u * 2.6).max(1.2), c, a);
+        if name == "saturn" {
+            rect(win, ox + p.0 - u * 6.0, oy + p.1 - u * 0.5, u * 12.0, (u * 1.0).max(1.0), c, 0.8 * a);
+        }
+        if a > 0.2 {
+            marks.push(PlaneMark { c, x: (p.0 + u * 10.0).clamp(w * 0.245, w * 0.70), y: p.1 - u * 8.0, title: name.to_string(), line: String::new() });
         }
     }
 
@@ -848,6 +909,9 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
             let tx = if y < h * 0.27 && x > w * 0.33 && x < w * 0.64 { w * 0.645 } else { (x + s * 2.2).clamp(w * 0.245, w * 0.62) };
             marks.push(PlaneMark { c: pal.accent, x: tx, y: (y - s * 1.2).max(h * 0.02), title, line: format!("{route}{} ft · {} kt", (ft as i64 / 100) * 100, kt as i64) });
         }
+    }
+    if get(st, &["away"]).as_bool().unwrap_or(false) {
+        rect(win, ox, oy, w, h, pal.bg, 0.45); // you are away: the city sleeps
     }
     marks
 }
