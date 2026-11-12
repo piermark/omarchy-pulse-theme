@@ -78,7 +78,9 @@ fn lab(labels: &mut Vec<Label>, x: f32, y: f32, size: f32, c: C, a: f32, text: S
 
 /// The free band between your panels, as the web page measures it.
 pub fn band(f: &Frame) -> (f32, f32) {
-    let b = (462.0 * f.u, f.w - 462.0 * f.u);
+    // pulse.js: from the right edge of the left column to the left edge of the right one, 30 px of air each side
+    let r = crate::ui::rem(f.w, f.h);
+    let b = (27.2 * r + 30.0, f.w - 27.2 * r - 30.0);
     if b.1 - b.0 > f.w * 0.25 { b } else { (f.w * 0.08, f.w * 0.92) }
 }
 

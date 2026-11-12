@@ -4,13 +4,17 @@ A parallel renderer for Omarchy Pulse. The web page stays the default (and is wh
 paints the same wallpaper natively on the GPU, with no browser underneath. It reads the same hub: the same
 `omarchy-pulse` service, the same token and the same `pulse.toml`.
 
-**Status: 0.10, experimental.** The port is being redone as a line-by-line translation of the published web page,
+**Status: 0.11, experimental.** The port is being redone as a line-by-line translation of the published web page,
 so that it looks and moves as Pulse 1.8 does. Translated so far: the panels, the clock and the ticker (pulse.css in
 rem: the same layout on every screen, at its full resolution), INCOMING and the effect text, the sphere (texture,
 face, programmes, gaze, LED map), the far city and the skyline of where you live, the clouds, the planes (which go
 on flying between two fixes of the hub, at their speed and on their heading), the drones of your agents with their
-tags, your network's traffic on the floor, the car, the energy river, the pulse on the horizon and the vignette.
-The rest of the scene is still the earlier drawing, and is next.
+tags, your network's traffic on the floor, the car, the energy river, the pulse on the horizon and the vignette;
+and in 0.11 the city and its light (the towers of the cores, your repos with their building sites and cranes, the
+ivy, the light of the real Sun or Moon: beams, mist, the path on the floor, the grid running with the CPU) and the
+sky (the real Sun and its eclipses, the real stars and constellations, the planets, the Moon with its phase and its
+eclipses, meteor showers, shooting stars, the aurora of your network). Rockets, Starlink, the ISS, the weather and
+the life on the floor are next.
 
 **CPU**: every letter on the sphere is drawn once and kept, gradients are small pictures kept on the GPU, the state
 is shared instead of copied, and a PC that cannot keep up gets fewer frames (pulse.js's cap: 70% of the frames,

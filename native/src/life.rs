@@ -4,7 +4,7 @@
 
 use crate::hub::{get, list, num, text};
 use crate::palette::{mix, scale, Pal, C};
-use crate::scene::{disc, glow, rect, PlaneMark, Rand};
+use crate::scene::{disc, glow, rect, PlaneMark};
 use gpui::{point, px, PathBuilder, Window};
 use serde_json::Value;
 
@@ -34,80 +34,6 @@ fn label(marks: &mut Vec<PlaneMark>, f: &Frame, x: f32, y: f32, c: C, title: Str
     marks.push(PlaneMark { c, x: x.clamp(f.w * 0.245, f.w * 0.70), y, title, line: String::new() });
 }
 
-/// The aurora: with a strong solar storm (Kp 5 or more) and a dark sky, green curtains wave over the north.
-pub fn aurora(win: &mut Window, st: &Value, pal: &Pal, f: &Frame) {
-    let kp = num(st, &["space", "kp"]).unwrap_or(0.0) as f32;
-    let k = ((kp - 4.0) / 4.0).clamp(0.0, 1.0) * f.sky[0];
-    if k < 0.03 {
-        return;
-    }
-    for i in 0..48 {
-        let fx = i as f32 / 48.0;
-        let sway = (fx * 9.0 + f.t * 0.35).sin() * 0.5 + (fx * 23.0 - f.t * 0.2).sin() * 0.25;
-        let top = f.hz * (0.10 + 0.06 * sway);
-        let hh = f.hz * (0.30 + 0.12 * (fx * 5.0 + f.t * 0.15).sin());
-        let c = mix(pal.ok, pal.accent2, (0.5 + 0.5 * (fx * 4.0 + f.t * 0.1).sin()) * 0.35);
-        let bg = gpui::linear_gradient(180.0, gpui::linear_color_stop(crate::palette::col(c, 0.0), 0.0), gpui::linear_color_stop(crate::palette::col(c, 0.16 * k), 0.45));
-        win.paint_quad(gpui::PaintQuad::new(gpui::Bounds::new(point(px(f.ox + fx * f.w), px(f.oy + top)), gpui::size(px(f.w / 48.0 + 1.0), px(hh)))).background(bg));
-    }
-}
-
-/// Your repos, as the towers nearest the dome: as tall as the week's commits, a beacon in the colour of the CI, a
-/// crane while it runs, an amber light for what is not committed. Returns the towers it drew, to skip their slots.
-pub fn repos(win: &mut Window, st: &Value, pal: &Pal, f: &Frame, marks: &mut Vec<PlaneMark>, private: bool) -> usize {
-    let repos = list(st, &["git"]);
-    let n = repos.len().min(6);
-    let black = [0.0, 0.0, 0.0];
-    for (i, r) in repos.iter().take(n).enumerate() {
-        let side = if i % 2 == 0 { -1.0 } else { 1.0 };
-        let k = (i / 2) as f32;
-        let x = f.ox + f.w / 2.0 + side * (f.w * 0.105 + k * f.w * 0.036);
-        let week = r.get("week").and_then(Value::as_f64).unwrap_or(0.0) as f32;
-        let bw = f.w * 0.019;
-        let bh = f.h * (0.11 + 0.20 * (week / 60.0).clamp(0.0, 1.0));
-        let by = f.oy + f.hz - bh;
-        let ci = r.get("ci").and_then(Value::as_str).unwrap_or("");
-        let cc = match ci { "ok" => pal.ok, "run" => pal.warn, "fail" => pal.crit, _ => pal.accent };
-        let body = mix(mix(pal.bg, pal.accent, 0.24), black, 0.28);
-        rect(win, x - bw / 2.0, by, bw, bh, body, 1.0);
-        rect(win, x + bw * 0.18, by, bw * 0.32, bh, scale(body, 0.75), 1.0);
-        rect(win, x - bw / 2.0, by, bw, (f.u * 2.0).max(1.0), cc, 0.95);
-        crate::scene::gradient(win, x - bw / 2.0, f.oy + f.hz + f.u * 2.0, bw, bh * 0.55, cc, 0.16, cc, 0.0); // its light on the wet floor
-        rect(win, x - bw / 2.0, by, (f.u * 1.2).max(1.0), bh, pal.accent, 0.4);
-        let mut rnd = Rand::new(900 + i as u64 * 31);
-        let (cw, ch) = (bw * 0.15, (f.u * 5.0).max(2.0));
-        let rows = (((bh - ch * 2.0) / (ch * 2.2)) as i32).min(40);
-        let lit = 0.25 + 0.6 * (week / 60.0).clamp(0.0, 1.0);
-        for iy in 0..rows {
-            for ix in 0..4 {
-                if rnd.next() < lit {
-                    let c = if rnd.next() > 0.8 { pal.accent2 } else { pal.accent };
-                    rect(win, x - bw * 0.40 + ix as f32 * bw * 0.22, by + ch * 1.6 + iy as f32 * ch * 2.2, cw, ch, c, 0.6 + 0.3 * (f.sky[0] + f.sky[1]));
-                }
-            }
-        }
-        let blink = if ci == "run" { 0.5 + 0.5 * (f.t * 5.0).sin() } else { 0.85 };
-        rect(win, x, by - f.h * 0.022, (f.u * 1.4).max(1.0), f.h * 0.022, pal.dim, 1.0);
-        glow(win, x, by - f.h * 0.022, f.h * 0.013, cc, blink);
-        if r.get("dirty").and_then(Value::as_f64).unwrap_or(0.0) > 0.0 {
-            disc(win, x - bw * 0.3, by + bh * 0.5, (f.u * 3.0).max(1.5), pal.warn, 0.95);
-        }
-        if ci == "run" {
-            // a crane on the roof, its arm swinging, a load on the hook
-            let (cx0, top) = (x - bw * 0.3, by - f.h * 0.07);
-            rect(win, cx0, top, (f.u * 2.0).max(1.0), f.h * 0.07, pal.warn, 0.95);
-            let reach = bw * (1.4 + 0.3 * (f.t * 0.6).sin());
-            rect(win, cx0 - bw * 0.4, top, reach + bw * 0.4, (f.u * 2.0).max(1.0), pal.warn, 0.95);
-            let hx = cx0 + reach * (0.55 + 0.35 * (f.t * 0.6).sin());
-            rect(win, hx, top, (f.u * 1.0).max(1.0), f.h * 0.03, pal.fg, 0.7);
-            rect(win, hx - f.u * 4.0, top + f.h * 0.03, f.u * 8.0, f.u * 6.0, pal.warn, 0.95);
-        }
-        if !private {
-            label(marks, f, x - f.ox - bw * 1.6, by - f.oy - f.h * 0.05, cc, format!("{} · {week:.0}", text(r, &["name"]).chars().take(14).collect::<String>()));
-        }
-    }
-    n
-}
 
 /// Your datacenter, as a district in front of the city: a hall for every row (a VM, a container, a host), its racks
 /// in the colour of its state; one that is down goes dark and red.

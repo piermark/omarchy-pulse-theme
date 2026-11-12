@@ -52,19 +52,24 @@ pub fn light(st: &Value, pal: &Pal, f: &Frame) -> Option<Light> {
     None
 }
 
-/// A low Sun sends its beams across the sky.
+/// pulse.js drawRays(): a low Sun sends its beams across the sky: nine wedges filled with one radial gradient from
+/// the Sun (drawn here as bands, each with the gradient's alpha at its middle).
 pub fn rays(win: &mut Window, l: &Light, f: &Frame, still: bool) {
     if !l.sun || l.low < 0.25 {
         return;
     }
     let t = if still { 0.0 } else { f.t };
     let (x, y) = (f.ox + l.x, f.oy + l.y);
+    let (len, r0) = (f.h * 0.75, f.h * 0.02);
+    let a_at = |r: f32| if r <= r0 { 1.0 } else { (1.0 - (r - r0) / (len - r0)).max(0.0) } * 0.10 * l.a * l.low;
+    let bands = 14;
     for i in 0..9 {
         let a0 = -PI * (0.04 + i as f32 * 0.115) + (t * 0.07 + i as f32 * 1.9).sin() * 0.03;
         let wd = 0.035 + ((i * 37) % 5) as f32 * 0.012;
-        // a beam fades with the distance: three lengths, each fainter
-        for (len, k) in [(f.h * 0.28, 0.05), (f.h * 0.5, 0.035), (f.h * 0.75, 0.02)] {
-            draw::poly(win, &[(x, y), (x + (a0 - wd).cos() * len, y + (a0 - wd).sin() * len), (x + (a0 + wd).cos() * len, y + (a0 + wd).sin() * len)], l.c, k * l.a * l.low);
+        for k in 0..bands {
+            let (ra, rb) = (len * k as f32 / bands as f32, len * (k + 1) as f32 / bands as f32);
+            let p = |r: f32, s: f32| (x + (a0 + s * wd).cos() * r, y + (a0 + s * wd).sin() * r);
+            draw::poly(win, &[p(ra, -1.0), p(rb, -1.0), p(rb, 1.0), p(ra, 1.0)], l.c, a_at((ra + rb) / 2.0));
         }
     }
 }
@@ -102,40 +107,103 @@ pub fn mirror(win: &mut Window, city: &[Building], pal: &Pal, f: &Frame, low: C)
     gradient(win, f.ox, f.oy + f.hz, f.w, rh + 1.0, fc, 0.0, fc, 0.97);
 }
 
-/// Mist drifting between the rows of the far city: thicker at dawn, at night and in fog.
+thread_local! {
+    /// pulse.js fogTexture(): 1024×96, made once for a colour (and a strength), kept on the GPU
+    static FOG: std::cell::RefCell<Option<(String, std::sync::Arc<gpui::RenderImage>)>> = Default::default();
+}
+
+fn fog_texture(win: &mut Window, c: C, k: f32) -> Option<std::sync::Arc<gpui::RenderImage>> {
+    let kq = (k.min(1.0) * 24.0).round() / 24.0;
+    let key = format!("{:.0},{:.0},{:.0}|{kq}", c[0] * 255.0, c[1] * 255.0, c[2] * 255.0);
+    if let Some(i) = FOG.with(|f| f.borrow().as_ref().filter(|x| x.0 == key).map(|x| x.1.clone())) {
+        return Some(i);
+    }
+    use tiny_skia::{Color, GradientStop, Paint, Pixmap, RadialGradient, Rect, SpreadMode, Transform};
+    let mut pm = Pixmap::new(1024, 96)?;
+    let mut rn = crate::backdrop::Rnd::new(4242);
+    let col = |a: f32| Color::from_rgba(c[0].clamp(0.0, 1.0), c[1].clamp(0.0, 1.0), c[2].clamp(0.0, 1.0), a.clamp(0.0, 1.0)).unwrap_or(Color::TRANSPARENT);
+    for _ in 0..46 {
+        let (px0, py0, r, a) = (rn.next() * 1024.0, 30.0 + rn.next() * 44.0, 40.0 + rn.next() * 90.0, 0.05 + rn.next() * 0.09);
+        for kk in -1..=1 {
+            // drawn three times, so the picture joins with itself at the sides
+            let cx = px0 + kk as f32 * 1024.0;
+            let ts = Transform::from_translate(0.0, py0).pre_scale(1.0, 0.32).pre_translate(0.0, -py0);
+            let stops = vec![GradientStop::new(0.0, col(a)), GradientStop::new(1.0, col(0.0))];
+            if let (Some(sh), Some(rect)) = (RadialGradient::new((cx, py0).into(), (cx, py0).into(), r, stops, SpreadMode::Pad, Transform::identity()), Rect::from_xywh(cx - r, py0 - r, r * 2.0, r * 2.0)) {
+                pm.fill_rect(rect, &Paint { shader: sh, anti_alias: false, ..Default::default() }, ts, None);
+            }
+        }
+    }
+    let mut px4 = pm.take();
+    for p in px4.chunks_exact_mut(4) {
+        let a = p[3] as f32 / 255.0;
+        if a > 0.0 {
+            let (r, g, b) = ((p[0] as f32 / a).min(255.0), (p[1] as f32 / a).min(255.0), (p[2] as f32 / a).min(255.0));
+            p[0] = b as u8;
+            p[1] = g as u8;
+            p[2] = r as u8;
+            p[3] = (p[3] as f32 * kq) as u8;
+        }
+    }
+    let im = image::RgbaImage::from_raw(1024, 96, px4)?;
+    let img = std::sync::Arc::new(gpui::RenderImage::new(vec![image::Frame::new(im)]));
+    if let Some(old) = FOG.with(|f| f.borrow_mut().replace((key, img.clone()))) {
+        let _ = win.drop_image(old.1);
+    }
+    Some(img)
+}
+
+/// pulse.js drawMist(): two layers of fog drifting along the horizon, one each way.
 pub fn mist(win: &mut Window, f: &Frame, c: C, k: f32, still: bool) {
     if k < 0.03 {
         return;
     }
-    let t = if still { 0.0 } else { f.t };
-    let th = f.h * 0.12;
+    let Some(tex) = fog_texture(win, c, k) else { return };
+    let (tw, th, mv) = ((f.w * 0.9).max(f.h * 1.6), f.h * 0.12, if still { 0.0 } else { f.t });
     for layer in 0..2 {
         let lf = layer as f32;
-        let speed = if layer == 1 { -0.006 } else { 0.009 };
-        let y = f.oy + f.hz - th * if layer == 1 { 0.39 } else { 0.30 };
-        for i in 0..7 {
-            let fi = i as f32;
-            let x = ((fi * 0.171 + lf * 0.37 + t * speed * f.h / f.w).rem_euclid(1.2) - 0.1) * f.w;
-            let (rx, ry) = (f.w * (0.10 + 0.05 * ((fi * 1.7 + lf).sin() * 0.5 + 0.5)), th * (0.22 + 0.10 * ((fi * 2.3).cos() * 0.5 + 0.5)));
-            draw::ellipse(win, f.ox + x, y + (fi * 1.3).sin() * th * 0.12, rx, ry, c, 0.07 * k.min(1.0));
-            draw::ellipse(win, f.ox + x, y + (fi * 1.3).sin() * th * 0.12, rx * 0.6, ry * 0.6, c, 0.06 * k.min(1.0));
+        let off = (mv * f.h * if layer == 1 { -0.006 } else { 0.009 } + lf * tw * 0.37).rem_euclid(tw);
+        let y = f.oy + f.hz - th * if layer == 1 { 0.78 } else { 0.6 };
+        let mut x = -off;
+        while x < f.w {
+            let at = gpui::Bounds::new(gpui::point(gpui::px(f.ox + x), gpui::px(y)), gpui::size(gpui::px(tw), gpui::px(th)));
+            let _ = win.paint_image(at, at, gpui::Corners::default(), 0.0, tex.clone(), 0, false);
+            x += tw;
         }
     }
 }
 
-/// The light on the floor: a low Sun's glow along the horizon, a pool long toward you, a path of glints.
+/// pulse.js draw(): the floor's grid runs toward you as fast as the CPU works (and with the bass).
+#[allow(clippy::too_many_arguments)]
+pub fn grid(win: &mut Window, pal: &Pal, f: &Frame, cpu: f32, bass: f32, moving: bool, noir: bool) {
+    if noir {
+        return;
+    }
+    let speed = if moving { 0.08 + cpu / 160.0 + bass * 0.9 } else { 0.0 };
+    let off = (f.t * speed).rem_euclid(1.0);
+    let (hz, lw) = (f.oy + f.hz, (f.h / 1080.0).max(1.0));
+    for k in 0..18 {
+        let p = (k as f32 + off) / 18.0;
+        let yh = hz + (f.h - f.hz) * p.powf(2.2);
+        draw::line(win, &[(f.ox, yh), (f.ox + f.w, yh)], lw, pal.accent, 0.05 + 0.45 * p);
+    }
+    let cx = f.ox + f.w / 2.0;
+    for k in -24i32..=24 {
+        draw::line(win, &[(cx + k as f32 * f.w * 0.012, hz), (cx + k as f32 * f.w * 0.11, f.oy + f.h)], lw, pal.accent, 0.18 - k.abs() as f32 * 0.005);
+    }
+}
+
+/// pulse.js drawLightPath(): a low Sun's glow along the horizon, a pool of light long toward you, a path of glints.
 pub fn light_path(win: &mut Window, l: &Light, f: &Frame, still: bool) {
     let t = if still { 0.0 } else { f.t };
     let (x, hz) = (f.ox + l.x, f.oy + f.hz);
+    let clip = |y0: f32, y1: f32| gpui::ContentMask { bounds: gpui::Bounds::new(gpui::point(gpui::px(f.ox), gpui::px(y0)), gpui::size(gpui::px(f.w), gpui::px((y1 - y0).max(0.0)))), ..Default::default() };
     if l.sun && l.low > 0.05 {
-        for (k, a) in [(1.0, 0.07), (0.6, 0.10), (0.3, 0.12)] {
-            draw::arc_fill(win, x, hz, f.w * 0.30 * k, f.w * 0.066 * k, 0.0, PI, TAU, l.c, a * l.a * l.low);
-        }
+        win.with_content_mask(Some(clip(f.oy, hz)), |win| crate::scene::radial(win, x, hz, 0.0, f.w * 0.30, 0.22, l.c, &[(0.0, 0.34 * l.a * l.low), (1.0, 0.0)]));
     }
     let (wv, hgt) = (f.h * 0.05, (f.h - f.hz) * 0.9);
-    for (k, a) in [(1.0, 0.06), (0.62, 0.10), (0.32, 0.20)] {
-        draw::arc_fill(win, x, hz, wv * 2.4 * k, hgt * k, 0.0, 0.0, PI, l.c, a * l.a);
-    }
+    let rr = wv * 2.4;
+    win.with_content_mask(Some(clip(hz, f.oy + f.h)), |win| crate::scene::radial(win, x, hz, 0.0, rr, hgt / rr, l.c, &[(0.0, 0.55 * l.a), (0.5, 0.18 * l.a), (1.0, 0.0)]));
     for i in 0..9 {
         let u = (i as f32 + 0.5) / 9.0;
         let yy = hz + hgt * 0.75 * u * u + f.h / 400.0;
@@ -161,37 +229,52 @@ pub fn rain_rings(win: &mut Window, f: &Frame, pal: &Pal, mm: f32, still: bool) 
     }
 }
 
-/// The skyline: a tower for each CPU core, as tall as its load (it dances with your music), its windows lit as the
-/// RAM fills; a building, not a card: a side going back toward the horizon, a roof with a mast, a tank or the air
-/// conditioning, a lit ground floor, its reflection on the wet floor. `skip` slots belong to your repos.
+/// pulse.js ivyOn2(): ivy on a building of the city, higher the longer the PC stays on.
+pub fn ivy(win: &mut Window, pal: &Pal, f: &Frame, x: f32, y0: f32, hgt: f32, seed: f32, still: bool) {
+    if hgt < f.h * 0.004 {
+        return;
+    }
+    let u = f.h / 1080.0;
+    let n = (hgt / (f.h * 0.006)).round() as usize;
+    let sway = if still { 0.0 } else { (f.t * 0.8 + seed).sin() * u * 0.6 };
+    for k in 0..n {
+        let q = k as f32 / n.max(1) as f32;
+        let (yy, xx) = (y0 - hgt * q, x + (q * 11.0 + seed).sin() * 3.0 * u + sway * q);
+        draw::arc_fill(win, xx, yy, 2.2 * u, 1.3 * u, if k % 2 == 1 { 0.6 } else { -0.6 }, 0.0, TAU, mix(pal.ok, pal.fg, (k % 4) as f32 * 0.07), 0.8);
+    }
+}
+
+/// pulse.js draw(): the skyline, a tower for each CPU core either side of the core, as tall as the core's load (it
+/// dances with your music; lower in front of a real city; lower in a focus), its windows lit as the RAM fills; in the
+/// 1.8 look a building, not a card: its reflection, a side going back toward the horizon (lit when it looks at the
+/// Sun or the Moon), the edge that catches the light, a mast, a tank or the air conditioning on the roof, a lit
+/// ground floor; the ivy of your uptime.
 #[allow(clippy::too_many_arguments)]
-pub fn towers(win: &mut Window, st: &Value, pal: &Pal, f: &Frame, lt: Option<Light>, heights: &mut Vec<f32>, audio: &[f32], skip: usize, inner: f32, polish: bool) {
+pub fn towers(win: &mut Window, st: &Value, pal: &Pal, f: &Frame, lt: Option<Light>, heights: &mut Vec<f32>, audio: &[f32], inner: f32, polish: bool, focus_k: f32, real_city: bool, noir: bool, still: bool) {
     let (h, hz) = (f.h, f.oy + f.hz);
     let cx = f.ox + f.w / 2.0;
     let (bg, ac, a2, black) = (pal.bg, pal.accent, pal.accent2, [0.0, 0.0, 0.0]);
     let cores: Vec<f32> = list(st, &["sys", "cores"]).iter().filter_map(|c| c.as_f64().map(|v| v as f32)).collect();
     let cpu = num(st, &["sys", "cpu"]).unwrap_or(0.0) as f32;
     let ram = num(st, &["sys", "ram"]).unwrap_or(0.0) as f32;
-    let music = get(st, &["music"]).as_bool().unwrap_or(false) && !audio.is_empty();
-    let focus = get(st, &["focus"]).is_object();
-    let nc = cores.len().clamp(8, 32);
+    let music = !audio.is_empty();
+    let nc = if noir { 0 } else { cores.len().clamp(8, 32) };
     let side = nc.div_ceil(2).max(1);
     let (b0, b1) = crate::extra::band(f);
-    let outer = (f.w / 2.0 - b0).min(b1 - f.w / 2.0);
+    let outer = (cx - f.ox - b0).min(b1 - (cx - f.ox));
     let slot = ((outer - inner) / side as f32).max(4.0);
     let bw = slot * 0.74;
     heights.resize(nc.max(heights.len()), -1.0);
     let (nk, tk) = (f.sky[0], f.sky[1]);
+    let uptime = num(st, &["sys", "uptime"]).unwrap_or(0.0) as f32;
+    let ivy_on = get(st, &["ui", "ivy"]).as_bool().unwrap_or(true);
     for i in 0..nc {
         let mut load = if cores.is_empty() { cpu } else { cores[i % cores.len()] };
         if music {
-            load = (load * 0.4 + audio[(i / 2).min(audio.len() - 1)] * 100.0 * 0.9).min(100.0); // the city dances
+            load = (load * 0.4 + audio[(i / 2).min(audio.len() - 1)] * 0.9).min(100.0); // the city dances
         }
         heights[i] = if heights[i] < 0.0 { load } else { heights[i] + (load - heights[i]) * if music { 0.35 } else { 0.06 } };
-        if i < skip {
-            continue; // a repo's tower stands here
-        }
-        let hh = h * 0.035 + heights[i] / 100.0 * h * 0.2 * if focus { 0.3 } else { 1.0 } + ((i * 37) % 11) as f32 / 11.0 * h * 0.03;
+        let hh = (h * 0.035 + heights[i] / 100.0 * h * 0.2 * (1.0 - focus_k * 0.7) + ((i * 37) % 11) as f32 / 11.0 * h * 0.03) * if real_city { 0.62 } else { 1.0 };
         let (s2, idx) = (if i % 2 == 1 { 1.0 } else { -1.0 }, (i / 2) as f32);
         let bx = if s2 > 0.0 { cx + inner + idx * slot } else { cx - inner - idx * slot - bw };
         gradient(win, bx, hz - hh, bw, hh, mix(bg, ac, 0.16), 1.0, mix(bg, black, 0.3), 1.0);
@@ -208,18 +291,15 @@ pub fn towers(win: &mut Window, st: &Value, pal: &Pal, f: &Frame, lt: Option<Lig
             draw::poly(win, &[(in_x, hz - hh), (in_x + dir * dw, hz - hh + dy), (in_x + dir * dw, hz), (in_x, hz)], side_c, 1.0);
             draw::line(win, &[(in_x, hz - hh), (in_x + dir * dw, hz - hh + dy)], (h / 1200.0).max(1.0), ac, 0.28);
             if let Some(l) = lt {
-                // the front edge on the side of the Sun or the Moon catches its light
-                let rw = (bw * 0.16).max(1.5) * 2.4;
+                // the front edge on the side of the Sun or the Moon catches its light: a gradient from the edge inward
+                let rw = (bw * 0.16).max(1.5);
                 let right = f.ox + l.x >= bx + bw / 2.0;
-                let steps = 4;
-                for k in 0..steps {
-                    let sw = rw / steps as f32;
-                    let x = if right { bx + bw - sw * (k + 1) as f32 } else { bx + sw * k as f32 };
-                    rect(win, x, hz - hh, sw, hh, l.c, 0.8 * l.a * (1.0 - (k as f32 + 0.5) / steps as f32));
-                }
+                let (x0, angle) = if right { (bx + bw - rw * 2.4, 270.0) } else { (bx, 90.0) };
+                let g = gpui::linear_gradient(angle, gpui::linear_color_stop(crate::palette::col(l.c, 0.8 * l.a), 0.0), gpui::linear_color_stop(crate::palette::col(l.c, 0.0), 1.0));
+                win.paint_quad(gpui::PaintQuad::new(gpui::Bounds::new(gpui::point(gpui::px(x0), gpui::px(hz - hh)), gpui::size(gpui::px(rw * 2.4), gpui::px(hh)))).background(g));
             }
-            // on the roof: by building a mast, a tank or the air conditioning
-            let (rk, ru) = ((i as u32).wrapping_mul(2654435761) % 5, (h / 700.0).max(1.0));
+            // on the roof: a parapet, and by building a mast, a tank or the air conditioning
+            let (rk, ru) = (((i as u64).wrapping_mul(2654435761) % 4294967296) % 5, (h / 700.0).max(1.0));
             let rc = mix(bg, ac, 0.34);
             match rk {
                 0 => {
@@ -247,16 +327,170 @@ pub fn towers(win: &mut Window, st: &Value, pal: &Pal, f: &Frame, lt: Option<Lig
         // the windows: more of them lit as the RAM fills
         let (cw, chh) = ((bw / 5.0).max(2.0), (h / 140.0).max(2.0));
         let (cols, rows) = ((((bw - cw) / (cw * 1.7)).floor() as i32).max(1), ((hh - chh * 2.0) / (chh * 2.2)).floor() as i32);
-        for ry in 0..rows.min(60) {
-            for cxi in 0..cols.min(8) {
+        for ry in 0..rows {
+            for cxi in 0..cols {
                 let hsh = ((i as i64 * 7919 + ry as i64 * 104729 + cxi as i64 * 1299709) % 1000) as f32 / 1000.0;
                 if hsh < ram / 100.0 * 0.75 {
-                    let flick = if (f.t * 0.07 + hsh * 13.0).fract() > 0.985 { 0.2 } else { 1.0 };
+                    let flick = if (f.t * 0.07 + hsh * 13.0).rem_euclid(1.0) > 0.985 { 0.2 } else { 1.0 };
                     let c = if hsh < 0.12 { a2 } else if hsh < 0.5 { ac } else { pal.warn };
                     let a = ((0.35 + hsh * 0.5) * flick * if polish { 0.8 + 0.45 * nk.max(tk * 0.7) } else { 1.0 }).min(1.0);
                     rect(win, bx + cw * 0.7 + cxi as f32 * cw * 1.7, hz - hh + chh * 2.0 + ry as f32 * chh * 2.2, cw, chh, c, a);
                 }
             }
         }
+        if heights[i] > 90.0 && (f.t * 2.0).rem_euclid(1.0) < 0.5 {
+            rect(win, bx + bw / 2.0 - 1.0, hz - hh - h / 90.0, 2.0, 2.0, pal.crit, 1.0);
+        }
+        if ivy_on && i % 3 == 0 && uptime > 3600.0 {
+            // 1.6: the ivy of your uptime
+            ivy(win, pal, f, bx + if s2 > 0.0 { 0.0 } else { bw }, hz, hh * (uptime / 86400.0 / 7.0 * (0.6 + (i % 5) as f32 * 0.1)).min(0.85), i as f32, still);
+        }
     }
+}
+
+/// pulse.js drawGit() and buildSite(): your repositories as towers beside the core, as tall as this week's commits;
+/// windows for the days of work, amber ones flickering for what is not committed; a beacon in the colour of the CI;
+/// a new floor lowered onto the roof at every commit, scaffolding while there are changes, a tower crane for every
+/// agent working on it, fire on the roof and the fire engine while the CI is red.
+#[allow(clippy::too_many_arguments)]
+pub fn git(win: &mut Window, cx_app: &mut gpui::App, font: &gpui::SharedString, st: &Value, pal: &Pal, f: &Frame, r_core: f32, flash: &std::collections::HashMap<String, f32>, fail_at: &mut std::collections::HashMap<String, f32>, real_city: bool, still: bool, share: bool) -> Vec<(String, f32, f32)> {
+    let repos = list(st, &["git"]);
+    let mut out = Vec::new();
+    if repos.is_empty() {
+        return out;
+    }
+    let (h, hz, t) = (f.h, f.oy + f.hz, f.t);
+    let cx = f.ox + f.w / 2.0;
+    let (b0, b1) = crate::extra::band(f);
+    let n = repos.len().min(8);
+    let ex = r_core * 1.2;
+    let side_w = [cx - ex - (f.ox + b0), (f.ox + b1) - cx - ex];
+    let half = n.div_ceil(2) as f32;
+    let max_w = repos.iter().map(|r| num(r, &["week"]).unwrap_or(0.0) as f32).fold(1.0f32, f32::max);
+    let agents = list(st, &["agents"]);
+    let yel = mix(pal.warn, [1.0, 210.0 / 255.0, 60.0 / 255.0], 0.5);
+    for (i, r) in repos.iter().take(n).enumerate() {
+        let (right, k) = (i % 2 == 1, (i >> 1) as f32);
+        let slot_w = side_w[right as usize] / half;
+        let bw = (slot_w * 0.42).min(h * 0.05);
+        let x = if right { cx + ex + (k + 0.5) * slot_w } else { cx - ex - (k + 0.5) * slot_w };
+        let week = num(r, &["week"]).unwrap_or(0.0) as f32;
+        let hh = h * (0.09 + 0.22 * (1.0 + week).ln() / (1.0 + max_w).ln()) * if real_city { 0.85 } else { 1.0 };
+        let name = crate::hub::text(r, &["name"]);
+        let fl = (1.0 - (t - flash.get(&name).copied().unwrap_or(-99.0)) / 2.5).max(0.0);
+        gradient(win, x - bw / 2.0, hz - hh, bw, hh, mix(mix(pal.bg, pal.accent, 0.22), pal.fg, fl * 0.5), 1.0, mix(pal.bg, [0.0; 3], 0.2), 1.0);
+        draw::frame(win, x - bw / 2.0, hz - hh, bw, hh, (h / 700.0).max(1.0), pal.accent, 0.55 + fl * 0.45);
+        // windows: one row per day of work; uncommitted changes flicker amber
+        let dirty_repo = get(r, &["dirty"]).as_bool().unwrap_or(false) || num(r, &["dirty"]).unwrap_or(0.0) > 0.0;
+        let rows = ((hh / (h * 0.018)).floor() as i32).min(14);
+        for ry in 0..rows {
+            for cxi in 0..3 {
+                let on = ((i as i32 * 31 + ry * 7 + cxi * 3) % 5) < 3;
+                let dirty = dirty_repo && ry < 2 && (t * 2.0 + cxi as f32).rem_euclid(2.0) < 1.0;
+                if !on && !dirty {
+                    continue;
+                }
+                rect(win, x - bw / 2.0 + bw * (0.15 + cxi as f32 * 0.27), hz - hh + h * 0.012 + ry as f32 * h * 0.018, bw * 0.16, h * 0.008,
+                    if dirty { pal.warn } else { pal.accent }, if dirty { 0.9 } else { 0.35 + 0.4 * fl + 0.2 * ((ry + cxi) % 2) as f32 });
+            }
+        }
+        // the beacon on top: green CI, red failed (blinking), amber running
+        let ci = crate::hub::text(r, &["ci"]);
+        let bc = match ci.as_str() { "ok" => pal.ok, "fail" => pal.crit, "run" => pal.warn, _ => pal.accent2 };
+        let blink = if ci == "fail" || ci == "run" { (t * 2.0).rem_euclid(1.0) < 0.5 } else { true };
+        rect(win, x - h / 600.0, hz - hh - h * 0.022, h / 300.0, h * 0.022, bc, if blink { 1.0 } else { 0.25 });
+        crate::scene::radial(win, x, hz - hh - h * 0.022, 0.0, h * 0.025, 1.0, bc, &[(0.0, if blink { 0.6 } else { 0.1 }), (1.0, 0.0)]);
+        if !name.is_empty() && !share {
+            let label = if week > 0.0 { format!("{name} · {week:.0}") } else { name.clone() };
+            draw::text(win, cx_app, font, &label, x, hz - hh - h * 0.03, (h * 0.013).round(), 600.0, pal.fg, 0.55 + fl * 0.45, 0);
+        }
+        out.push((name.clone(), x, hz - hh));
+        // ---- buildSite()
+        let top = hz - hh;
+        let key = if name.is_empty() { format!("#{i}") } else { name.clone() };
+        if fl > 0.0 && fl < 1.0 {
+            // the new floor, lowered onto the roof
+            let drop = fl.powi(2) * h * 0.07;
+            rect(win, x - bw / 2.0, top - h * 0.012 - drop, bw, h * 0.012, mix(pal.bg, pal.accent, 0.4), 0.95);
+            draw::line(win, &[(x, top - h * 0.012 - drop), (x, top - h * 0.09)], 1.0, yel, 0.8);
+        }
+        if dirty_repo {
+            // scaffolding on the top floors
+            let sh = hh.min(h * 0.06);
+            let (x0, x1) = (x - bw / 2.0 - bw * 0.12, x + bw / 2.0 + bw * 0.12);
+            let lw = (h / 1100.0).max(1.0);
+            draw::frame(win, x0, top, x1 - x0, sh, lw, yel, 0.5);
+            for kk in 0..3 {
+                let yy = top + sh * kk as f32 / 3.0;
+                draw::line(win, &[(x0, yy), (x1, yy + sh / 3.0)], lw, yel, 0.5);
+                draw::line(win, &[(x1, yy), (x0, yy + sh / 3.0)], lw, yel, 0.5);
+            }
+        }
+        let hay = |a: &Value| format!("{} {}", crate::hub::text(a, &["name"]), crate::hub::text(a, &["text"])).to_lowercase();
+        let mut work: Vec<&Value> = agents.iter().filter(|a| crate::hub::text(a, &["state"]) == "working" && !name.is_empty() && hay(a).contains(&name.to_lowercase())).collect();
+        if work.is_empty() && i == 0 {
+            work = agents.iter().filter(|a| crate::hub::text(a, &["state"]) == "working" && !repos.iter().any(|g2| { let n2 = crate::hub::text(g2, &["name"]); !n2.is_empty() && hay(a).contains(&n2.to_lowercase()) })).collect();
+        }
+        for (j, a) in work.iter().take(2).enumerate() {
+            // a tower crane: the mast beside the building, the jib over it
+            let side = if j == 1 { -1.0 } else { 1.0 };
+            let (mx, mtop, jib) = (x + side * (bw / 2.0 + bw * 0.35), top - h * 0.07, bw * 1.3);
+            let lw = (h / 650.0).max(1.5);
+            draw::line(win, &[(mx, hz), (mx, mtop)], lw, yel, 0.9);
+            draw::line(win, &[(mx + side * bw * 0.3, mtop), (mx - side * jib, mtop)], lw, yel, 0.9);
+            let mut y = hz;
+            let lw2 = (h / 1400.0).max(1.0);
+            while y > mtop {
+                draw::line(win, &[(mx - h * 0.004, y), (mx + h * 0.004, y - h * 0.007)], lw2, yel, 0.9);
+                y -= h * 0.014;
+            }
+            let sw = if still { 0.0 } else { (t * 1.3 + j as f32).sin() * bw * 0.25 };
+            let hx = mx - side * jib * 0.7 + sw;
+            let hy = mtop + h * 0.03 + if still { 0.0 } else { (t * 0.7 + j as f32).sin() * h * 0.01 };
+            draw::line(win, &[(mx - side * jib * 0.7 + sw * 0.2, mtop), (hx, hy)], lw2, yel, 0.9);
+            rect(win, hx - h * 0.004, hy, h * 0.008, h * 0.006, yel, 0.95);
+            rect(win, mx - h * 0.006, mtop + h * 0.002, h * 0.012, h * 0.01, pal.bg, 0.9); // the cab
+            if !share {
+                let initial: String = crate::hub::text(a, &["name"]).chars().next().map(|c| c.to_uppercase().collect()).unwrap_or_else(|| "?".into());
+                draw::text(win, cx_app, font, &initial, mx, mtop + h * 0.0095, (h * 0.008).round().max(6.0), 700.0, yel, 1.0, 0);
+            }
+        }
+        if ci == "fail" {
+            // fire on the roof, and the fire engine on its way
+            let since = *fail_at.entry(key.clone()).or_insert(t);
+            for fi in 0..6 {
+                let fh = h * 0.03 * if still { 0.8 } else { 0.6 + 0.4 * (t * 7.0 + fi as f32 * 1.7).sin().abs() };
+                let fx = x - bw / 2.0 + bw * (fi as f32 + 0.5) / 6.0;
+                // a flame: quadraticCurveTo through (fx, top - fh * 1.2), filled with a gradient from crit at the roof
+                // to transparent warn at top - fh; drawn in slices
+                let b = bw / 12.0;
+                let half = |dy: f32| b * (1.0 - 4.0 * (dy / (2.4 * fh)).min(0.25)).max(0.0).sqrt();
+                let slices = 6;
+                for sl in 0..slices {
+                    let (d0, d1) = (0.6 * fh * sl as f32 / slices as f32, 0.6 * fh * (sl + 1) as f32 / slices as f32);
+                    let k = 1.0 - (d0 + d1) / 2.0 / fh;
+                    draw::poly(win, &[(fx - half(d0), top - d0), (fx + half(d0), top - d0), (fx + half(d1), top - d1), (fx - half(d1), top - d1)], mix(pal.warn, pal.crit, k), 0.85 * k);
+                }
+            }
+            let go = ((t - since) / 6.0).min(1.0);
+            let side2 = if x > cx { 1.0 } else { -1.0 };
+            let (tx, ty, tw) = (x + side2 * (f.w * 0.35 * (1.0 - go) + bw * 0.9), hz + h * 0.03, h * 0.05);
+            rect(win, tx - tw / 2.0, ty - h * 0.016, tw, h * 0.016, pal.crit, 0.95);
+            rect(win, tx - side2 * tw * 0.35 - h * 0.006, ty - h * 0.024, h * 0.012, h * 0.008, mix(pal.crit, pal.fg, 0.4), 1.0);
+            for uu in [-0.3f32, 0.3] {
+                draw::arc_fill(win, tx + uu * tw, ty, h * 0.005, h * 0.005, 0.0, 0.0, TAU, pal.bg, 1.0);
+            }
+            let bl2 = still || (t * 3.0).rem_euclid(1.0) < 0.5;
+            rect(win, tx - h * 0.003, ty - h * 0.02, h * 0.006, h * 0.004, if bl2 { [80.0 / 255.0, 140.0 / 255.0, 1.0] } else { pal.crit }, 1.0);
+            if go >= 1.0 {
+                // the water
+                let (sx0, sy0, cx1, cy1, ex1, ey1) = (tx - side2 * tw * 0.4, ty - h * 0.02, (tx + x) / 2.0, top - h * 0.08, x + side2 * bw * 0.2, top - h * 0.005);
+                let pts: Vec<(f32, f32)> = (0..=16).map(|q| { let u = q as f32 / 16.0; ((1.0 - u) * (1.0 - u) * sx0 + 2.0 * (1.0 - u) * u * cx1 + u * u * ex1, (1.0 - u) * (1.0 - u) * sy0 + 2.0 * (1.0 - u) * u * cy1 + u * u * ey1) }).collect();
+                draw::line(win, &pts, (h / 700.0).max(1.5), [150.0 / 255.0, 200.0 / 255.0, 1.0], 0.55);
+            }
+        } else {
+            fail_at.remove(&key);
+        }
+    }
+    out
 }
