@@ -9,6 +9,8 @@
 //!     pulse-native --scene city   the first world of pulse-native: a far city under a warm dusk
 //!     pulse-native --url http://127.0.0.1:47800 --fps 30
 
+mod backdrop;
+mod cities_data;
 mod city;
 mod design;
 mod draw;

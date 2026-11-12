@@ -95,6 +95,9 @@ pub struct World {
     view: Option<(f64, Value)>,
     /// effects the scenes asked for that make a sound: main.rs plays them
     pub sounds: Vec<&'static str>,
+    /// what never moves, painted once and kept as a picture (pulse.js paintStatic)
+    pub back: crate::backdrop::Backdrop,
+    back_img: Option<std::sync::Arc<gpui::RenderImage>>,
     /// the sphere of Pulse 1.8: its texture, its map, its picture
     pub ball: crate::sphere::Sphere,
     /// the sphere's picture and its reflection as the GPU has them now (dropped when a new frame replaces them)
@@ -180,7 +183,7 @@ impl World {
             })
             .collect();
         let drops = (0..900).map(|_| (r.next(), r.next(), 0.5 + r.next() * 0.5, r.next())).collect();
-        World { stars, city, clouds, drops, last_t: 0.0, sl: Vec::new(), iss: None, iss_trail: Vec::new(), liftoffs: Vec::new(), bursts: Vec::new(), flash: 0.0, shooting: Vec::new(), say: None, seed: 42, rings: Vec::new(), more: Default::default(), code: Default::default(), labels: Vec::new(), hits: Vec::new(), centre: None, pointer: None, wall: false, has_cam: false, simple: false, last: None, beats: Vec::new(), heights: Vec::new(), audio: Vec::new(), tz: 0, prog: "face", alert_at: -1e9, view: None, sounds: Vec::new(), ball: Default::default(), ball_img: None, gaze: (0.0, 0.0), hm: String::new(), date_short: String::new(), typing: false, woke_at: -1e9, car_at: -1e9, cam: None, door: None, alert_env: 0.0, desk_empty: true }
+        World { stars, city, clouds, drops, last_t: 0.0, sl: Vec::new(), iss: None, iss_trail: Vec::new(), liftoffs: Vec::new(), bursts: Vec::new(), flash: 0.0, shooting: Vec::new(), say: None, seed: 42, rings: Vec::new(), more: Default::default(), code: Default::default(), labels: Vec::new(), hits: Vec::new(), centre: None, pointer: None, wall: false, has_cam: false, simple: false, last: None, beats: Vec::new(), heights: Vec::new(), audio: Vec::new(), tz: 0, prog: "face", alert_at: -1e9, view: None, sounds: Vec::new(), back: Default::default(), back_img: None, ball: Default::default(), ball_img: None, gaze: (0.0, 0.0), hm: String::new(), date_short: String::new(), typing: false, woke_at: -1e9, car_at: -1e9, cam: None, door: None, alert_env: 0.0, desk_empty: true }
     }
 }
 
@@ -507,7 +510,34 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
     let mx = |k: usize| -> C { [pn[k][0] * wn + pt[k][0] * wt + pd[k][0] * wd, pn[k][1] * wn + pt[k][1] * wt + pd[k][1] * wd, pn[k][2] * wn + pt[k][2] * wt + pd[k][2] * wd] };
     let over = cloud * 0.35; // an overcast sky is greyer
     let (top, midc, low) = (mix(mx(0), grey, over * 0.6), mix(mx(1), grey, over), mix(mx(2), grey, over * 0.8));
-    if !wall {
+    // what never moves comes from one picture, painted as pulse.js paints it and only when something changes
+    let use_back = !wall && !noir && !mars && !pond && kind != "city";
+    if use_back {
+        let sf = win.scale_factor().clamp(1.0, 2.0);
+        let rem = crate::ui::rem(w, h);
+        let edge = (27.2 * rem + 30.0) * sf;
+        let band = if (w * sf - 2.0 * edge) > w * sf * 0.25 { (edge, w * sf - edge) } else { (w * sf * 0.08, w * sf * 0.92) };
+        let local_minutes = ((num(st, &["t"]).unwrap_or(0.0) as i64 + world.tz).rem_euclid(86400)) / 60;
+        world.back.update(&crate::backdrop::Scene { st, pal, kind, w: (w * sf).round() as u32, h: (h * sf).round() as u32, band, local_minutes, polished: crate::look::on(st), world_off: monolith });
+        if world.back.fresh || world.back_img.is_none() {
+            let b = &world.back;
+            if let Some(im) = image::RgbaImage::from_raw(b.w, b.h, b.pixels.clone()) {
+                if let Some(old) = world.back_img.replace(std::sync::Arc::new(gpui::RenderImage::new(vec![image::Frame::new(im)]))) {
+                    let _ = win.drop_image(old);
+                }
+            }
+        }
+        if let Some(im) = &world.back_img {
+            let at = Bounds::new(point(px(ox), px(oy)), size(px(w), px(h)));
+            let _ = win.paint_image(at, at, gpui::Corners::default(), 0.0, im.clone(), 0, false);
+        }
+        // the red lights on top of your city's landmarks
+        if tf.rem_euclid(1.7) < 0.22 && !monolith {
+            for tp in &world.back.tops {
+                rect(win, ox + tp.0 / sf - h / 700.0, oy + tp.1 / sf - h / 300.0, h / 350.0, h / 350.0, pal.crit, 0.95);
+            }
+        }
+    } else if !wall {
         gradient(win, ox, oy, w, hz * 0.7 + 1.0, top, 1.0, midc, 1.0);
         gradient(win, ox, oy + hz * 0.7, w, hz * 0.3 + 1.0, midc, 1.0, low, 1.0);
     }
@@ -657,7 +687,7 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
     // ---- the far city: three rows, paler with the distance; windows come on as the Sun goes down
     let lit = 0.07 + 0.50 * wn + 0.28 * wt;
     let warm = mix(pal.warn, pal.fg, 0.35);
-    for b in world.city.iter().filter(|_| !noir && !wall && !mars) {
+    for b in world.city.iter().filter(|_| !noir && !wall && !mars && !use_back) {
         let depth = b.layer as f32 / 2.0; // 0 far, 1 near
         let body = mix(mix(pal.bg, low, 0.70 - depth * 0.30), pal.fg, 0.02 + depth * 0.02);
         let (bx, bw, bh) = (ox + b.x * w, b.w * w, b.h * h);
@@ -686,14 +716,16 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
 
     if !noir && !wall {
         // ---- the ground: pulse.js's floor, and the grid that runs to the horizon
-        gradient(win, ox, oy + hz, w, h - hz, mix(bg, a2, 0.2), 1.0, mix(bg, black, 0.5), 1.0);
-        gradient(win, ox, oy + hz, w, h * 0.06, mix(pal.accent, a2, 0.5), 0.10 + 0.12 * (wn + wt * 0.6), bg, 0.0);
+        if !use_back {
+            gradient(win, ox, oy + hz, w, h - hz, mix(bg, a2, 0.2), 1.0, mix(bg, black, 0.5), 1.0);
+            gradient(win, ox, oy + hz, w, h * 0.06, mix(pal.accent, a2, 0.5), 0.10 + 0.12 * (wn + wt * 0.6), bg, 0.0);
+        }
         if polish {
             // 1.8: the air over the far city, mist between its rows, the wet floor that mirrors it
-            let hzc = crate::look::air(win, pal, &frame, low);
+            let hzc = if use_back { let a = world.back.air; [a[0] / 255.0, a[1] / 255.0, a[2] / 255.0] } else { crate::look::air(win, pal, &frame, low) };
             let fog = if code == 45 || code == 48 { 1.0 } else { 0.0 };
             crate::look::mist(win, &frame, hzc, (0.25 + 0.35 * wn + 0.5 * wt + fog).min(1.0) * 0.9, still_l);
-            if !orbit {
+            if !orbit && !use_back {
                 crate::look::mirror(win, &world.city, pal, &frame, low);
             }
         }
