@@ -103,6 +103,8 @@ struct Pulse {
     cap: Rc<std::cell::Cell<(u64, u32, f64)>>,
     /// what the last frame cost on the CPU (ms): the panels, then the scene
     cost: Rc<std::cell::Cell<(f64, f64)>>,
+    /// the frames a second the CPU budget allows now
+    budget_fps: std::cell::Cell<u64>,
     /// text panels: the text and when it started to be typed out
     was_away: bool,
     /// the first camera's frame as it came (the sphere shows it in its turn)
@@ -115,6 +117,7 @@ impl Pulse {
         let hub2 = hub.clone();
         let monkey = Arc::new(Mutex::new(String::new()));
         let (key2, forced_scene) = (monkey.clone(), scene.clone());
+        let mut next_due = Instant::now();
         cx.spawn(async move |this, cx| loop {
             // how often to draw, as the web page decides it: not at all while this monitor is covered, once a second
             // under a fullscreen window, slowly with windows open, on battery, away, or on a still scene
@@ -144,16 +147,19 @@ impl Pulse {
                     if at > 0.0 && now - at > 60.0 {
                         (cap, at) = (60, 0.0);
                     }
-                    // and never more than the CPU budget: frames a second × what a frame costs ≤ budget
+                    // and never more than the CPU budget: frames a second × what a frame costs ≤ budget. It moves by
+                    // whole steps and only when the cost has really changed, so the pace stays even
                     if frame_ms > 0.0 {
-                        let most = ((cpu_budget() * 10.0 / frame_ms) as u64).max(8);
-                        cap = cap.min(most.max(1));
-                        if at == 0.0 && most < 60 {
-                            at = now - 50.0; // look again in ten seconds
+                        let most = ((cpu_budget() * 10.0 / frame_ms) as u64).clamp(8, 60);
+                        let b = this.budget_fps.get();
+                        if b == 0 || most + 2 < b || most > b + 2 {
+                            this.budget_fps.set(most);
                         }
                     }
                     this.cap.set((cap, slow, at));
-                    cap
+                    // a calm scene (nothing falling, no music, no fireworks...) moves slowly: 12 frames a second
+                    let calm_cap = if this.world.borrow().lively { 60 } else { 12 };
+                    match this.budget_fps.get() { 0 => cap.min(calm_cap), b => cap.min(b).min(calm_cap) }
                 }) {
                     Ok(cap) => want = want.min(cap),
                     Err(_) => break,
@@ -162,13 +168,16 @@ impl Pulse {
             if covered && this.update(cx, |_, _| ()).is_err() {
                 break;
             }
-            cx.background_executor().timer(Duration::from_millis(if covered { 1000 } else { 1000 / want.clamp(1, 60) })).await;
+            // frames at an even pace: the next one is due one period after the last was due, however long the work took
+            let period = Duration::from_micros(if covered { 1_000_000 } else { 1_000_000 / want.clamp(1, 60) });
+            next_due = (next_due + period).max(Instant::now());
+            cx.background_executor().timer(next_due.saturating_duration_since(Instant::now())).await;
         })
         .detach();
         let world = scene::World::new();
         let hud_data: Rc<RefCell<HudData>> = Default::default();
         let hud = cx.new(|_| Hud { data: hud_data.clone() });
-        Pulse { hub, live, forced: !scene.is_empty(), scene, city: Rc::new(RefCell::new(city::World::new())), world: Rc::new(RefCell::new(world)), marks: Rc::new(RefCell::new(Vec::new())), mem: Rc::new(RefCell::new(design::Mem::default())), drawn: Rc::new(RefCell::new((Vec::new(), Vec::new()))), assets: (String::new(), Default::default()), reacted: 0.0, started: Instant::now(), font: font.into(), base, primary, monkey, origin: (0.0, 0.0), sound: sound::Sound::new(), wallpaper: (String::new(), None, None), cover: (String::new(), None), seen_alert: -1, incoming: None, seen_digest: 0, digest: None, ack: None, last_cursor: None, sounded: 0.0, hud_data, hud, hud_key: String::new(), raw_assets: Default::default(), tinted: Default::default(), draft: None, drag: None, boxes: Default::default(), cap: Rc::new(std::cell::Cell::new((60, 0, 0.0))), cost: Default::default(), was_away: false, cam_bytes: None }
+        Pulse { hub, live, forced: !scene.is_empty(), scene, city: Rc::new(RefCell::new(city::World::new())), world: Rc::new(RefCell::new(world)), marks: Rc::new(RefCell::new(Vec::new())), mem: Rc::new(RefCell::new(design::Mem::default())), drawn: Rc::new(RefCell::new((Vec::new(), Vec::new()))), assets: (String::new(), Default::default()), reacted: 0.0, started: Instant::now(), font: font.into(), base, primary, monkey, origin: (0.0, 0.0), sound: sound::Sound::new(), wallpaper: (String::new(), None, None), cover: (String::new(), None), seen_alert: -1, incoming: None, seen_digest: 0, digest: None, ack: None, last_cursor: None, sounded: 0.0, hud_data, hud, hud_key: String::new(), raw_assets: Default::default(), tinted: Default::default(), draft: None, drag: None, boxes: Default::default(), cap: Rc::new(std::cell::Cell::new((60, 0, 0.0))), cost: Default::default(), budget_fps: std::cell::Cell::new(0), was_away: false, cam_bytes: None }
     }
 
     /// A click on the wallpaper: a storm over a failing panel (twice: acknowledge it), or something of the scene,
@@ -205,7 +214,8 @@ impl Pulse {
                 Err(_) => return,
             };
             if let Some((_, d)) = design {
-                let scene_st = if get(&st, &["scene"]).is_object() { get(&st, &["scene"]).clone() } else { (*st).clone() };
+                // shared, not copied: a copy of the whole state every frame was a hitch each time the hub sent a new one
+        let scene_st: Arc<Value> = if get(&st, &["scene"]).is_object() { Arc::new(get(&st, &["scene"]).clone()) } else { st.clone() };
                 for ask in design::react_to(&d, &scene_st, &mut self.mem.borrow_mut(), t, Some(&id)) {
                     let kind = if ask.kind == "text" { "say" } else { ask.kind.as_str() };
                     world.fx(kind, &ask.text, false, t);

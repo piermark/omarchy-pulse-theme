@@ -41,6 +41,11 @@ impl Heavens {
         ((self.seed >> 33) % 1_000_000) as f32 / 1_000_000.0
     }
 
+    /// A shooting star crossing the sky now.
+    pub fn busy(&self) -> bool {
+        !self.shooting.is_empty()
+    }
+
     /// The hub's effects: "shooting" and "iss" each send a shooting star (pulse.js live()).
     pub fn fx(&mut self, kind: &str) {
         match kind {
@@ -364,6 +369,11 @@ impl Overhead {
 
     /// drawFireworks(): the rockets and their trails, sparks with gravity, some glittering, the sky lit a moment.
     #[allow(clippy::too_many_arguments)]
+    /// Fireworks in the air or about to go up.
+    pub fn busy(&self) -> bool {
+        !self.rockets.is_empty() || !self.sparks.is_empty() || !self.queue.is_empty()
+    }
+
     pub fn draw_fireworks(&mut self, win: &mut Window, pal: &Pal, ox: f32, oy: f32, w: f32, h: f32, now: f64, band: (f32, f32), frames: f32) {
         let cols = [pal.accent, pal.accent2, pal.ok, pal.warn, pal.fg];
         let due: Vec<(f64, f32, f32, bool)> = self.queue.iter().filter(|q| q.0 <= now).copied().collect();

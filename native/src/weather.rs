@@ -99,22 +99,41 @@ impl Weather {
                     let len = h * 0.026 * sp + h * 0.008;
                     segs.push(((ox + d[0], oy + d[1]), (ox + d[0] + len * sl, oy + d[1] - len)));
                 }
+                // each drop a streak: the head brighter, the tail fading (two shapes a layer, not one per drop)
                 let lw = ([1.0, 1.5, 2.3][l] * u).max(1.0);
-                for (a, b) in segs {
-                    draw::line(win, &[a, b], lw, c, [0.22, 0.36, 0.55][l]);
-                }
+                let al = [0.22, 0.36, 0.55][l];
+                let mid = |a: (f32, f32), b: (f32, f32), k: f32| (a.0 + (b.0 - a.0) * k, a.1 + (b.1 - a.1) * k);
+                let heads: Vec<_> = segs.iter().map(|(a, b)| (*a, mid(*a, *b, 0.45))).collect();
+                let tails: Vec<_> = segs.iter().map(|(a, b)| (mid(*a, *b, 0.45), *b)).collect();
+                draw::lines(win, &tails, lw, c, al * 0.55);
+                draw::lines(win, &heads, lw, mix(c, pal.fg, 0.35), (al * 1.25).min(1.0));
             }
             // the rings where they land, flat like the floor, and the splash
             self.ripples.retain(|r| (now - r.2) / 0.52 < 1.0);
-            for r in &self.ripples {
-                let a = ((now - r.2) / 0.52) as f32;
-                let rr = h * 0.016 * r.3 * (0.25 + a);
-                draw::arc(win, ox + r.0, oy + r.1, rr, rr * 0.3, 0.0, std::f32::consts::TAU, u.max(1.0), pal.fg, 0.6 * (1.0 - a));
-                if a < 0.25 {
-                    crate::scene::rect(win, ox + r.0 - u, oy + r.1 - h * 0.006 * (1.0 - a * 2.0), (u * 1.5).max(1.0), h * 0.005, pal.fg, 0.5 * (1.0 - a * 4.0));
+            // in four steps of age, each one shape: the rings widen and fade, the splash jumps and falls
+            for step in 0..4 {
+                let (a0, a1) = (step as f32 / 4.0, (step + 1) as f32 / 4.0);
+                let mut rings: Vec<((f32, f32), (f32, f32))> = Vec::new();
+                let mut splash: Vec<((f32, f32), (f32, f32))> = Vec::new();
+                for r in &self.ripples {
+                    let a = ((now - r.2) / 0.52) as f32;
+                    if a < a0 || a >= a1 {
+                        continue;
+                    }
+                    let rr = h * 0.016 * r.3 * (0.25 + a);
+                    let pts = crate::xf::ellipse_pts(ox + r.0, oy + r.1, rr, rr * 0.3, 0.0, std::f32::consts::TAU, 18);
+                    rings.extend(pts.windows(2).map(|w2| (w2[0], w2[1])));
+                    if a < 0.25 {
+                        let y0 = oy + r.1 - h * 0.006 * (1.0 - a * 2.0);
+                        splash.push(((ox + r.0, y0), (ox + r.0, y0 + h * 0.005)));
+                    }
                 }
+                let am = (a0 + a1) / 2.0;
+                draw::lines(win, &rings, u.max(1.0), pal.fg, 0.6 * (1.0 - am));
+                draw::lines(win, &splash, (u * 1.5).max(1.0), pal.fg, 0.5 * (1.0 - am * 4.0).max(0.0));
             }
         } else if rainy {
+            let mut plain = Vec::with_capacity(n);
             for i in 0..n {
                 let mut d = self.drops[i];
                 if !still {
@@ -128,8 +147,9 @@ impl Weather {
                 }
                 self.drops[i] = d;
                 let sl = if wind_x != 0.0 { -wind_x * 0.9 } else { 0.22 };
-                draw::line(win, &[(ox + d[0], oy + d[1]), (ox + d[0] + h * 0.018 * d[2] * sl, oy + d[1] - h * 0.018 * d[2])], 1.0, pal.fg, 0.22);
+                plain.push(((ox + d[0], oy + d[1]), (ox + d[0] + h * 0.018 * d[2] * sl, oy + d[1] - h * 0.018 * d[2])));
             }
+            draw::lines(win, &plain, 1.0, pal.fg, 0.22);
         } else if wx == "snow" {
             for i in 0..n {
                 let mut s = self.drops[i];
@@ -144,7 +164,7 @@ impl Weather {
                 self.drops[i] = s;
                 if polished {
                     let fs = (h / 1080.0 * (1.0 + s[2] * 2.2)).max(1.5);
-                    draw::arc_fill(win, ox + s[0], oy + s[1], fs / 2.0, fs / 2.0, 0.0, 0.0, std::f32::consts::TAU, pal.fg, 0.6 * (0.35 + 0.45 * (s[2] - 0.6) / 0.8));
+                    crate::scene::disc(win, ox + s[0], oy + s[1], fs / 2.0, pal.fg, 0.6 * (0.35 + 0.45 * (s[2] - 0.6) / 0.8)); // a round quad: no shape to build
                 } else {
                     crate::scene::rect(win, ox + s[0], oy + s[1], 2.0, 2.0, pal.fg, 0.6);
                 }

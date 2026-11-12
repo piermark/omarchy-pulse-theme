@@ -231,3 +231,18 @@ pub fn vignette(win: &mut Window, x: f32, y: f32, w: f32, h: f32) {
     let at = gpui::Bounds::new(point(px(x), px(y)), gpui::size(px(w), px(h)));
     let _ = win.paint_image(at, at, gpui::Corners::default(), 0.0, img, 0, false);
 }
+
+/// Many separate segments in one colour as one path: one shape for the GPU instead of hundreds (rain, grids).
+pub fn lines(win: &mut Window, segs: &[((f32, f32), (f32, f32))], lw: f32, c: C, a: f32) {
+    if segs.is_empty() || a <= 0.004 {
+        return;
+    }
+    let mut b = PathBuilder::stroke(px(lw.max(1.0)));
+    for (p, q) in segs {
+        b.move_to(point(px(p.0), px(p.1)));
+        b.line_to(point(px(q.0), px(q.1)));
+    }
+    if let Ok(path) = b.build() {
+        win.paint_path(path, col(c, a));
+    }
+}

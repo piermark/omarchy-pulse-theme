@@ -73,6 +73,8 @@ pub struct World {
     pub street: crate::street::Street,
     pub overhead: crate::heavens::Overhead,
     pub pushed: Vec<String>,
+    /// something on screen moves fast (see the end of paint)
+    pub lively: bool,
     pub weather: crate::weather::Weather,
     /// the first monitor: the banners and the tips fly there only
     pub primary: bool,
@@ -175,7 +177,7 @@ impl World {
                 x += w + r.next() * 0.004;
             }
         }
-        World { city, last_t: 0.0, rockets: Default::default(), bursts: Vec::new(), say: None, seed: 42, rings: Vec::new(), more: Default::default(), code: Default::default(), labels: Vec::new(), hits: Vec::new(), centre: None, pointer: None, wall: false, has_cam: false, simple: false, last: None, beats: Vec::new(), heights: Vec::new(), audio: Vec::new(), tz: 0, prog: "face", alert_at: -1e9, view: None, sounds: Vec::new(), back: Default::default(), back_img: None, ball: Default::default(), ball_img: None, ball_at: -1e9, gaze: (0.0, 0.0), hm: String::new(), date_short: String::new(), typing: false, woke_at: -1e9, car_at: -1e9, cam: None, door: None, alert_env: 0.0, desk_empty: true, sky: Default::default(), floor: Default::default(), drones: Default::default(), focus_k: 0.0, band: (0.0, 0.0), heavens: Default::default(), street: Default::default(), overhead: Default::default(), pushed: Vec::new(), weather: Default::default(), primary: true, git_flash: Default::default(), git_fail: Default::default(), git_pos: Vec::new() }
+        World { city, last_t: 0.0, rockets: Default::default(), bursts: Vec::new(), say: None, seed: 42, rings: Vec::new(), more: Default::default(), code: Default::default(), labels: Vec::new(), hits: Vec::new(), centre: None, pointer: None, wall: false, has_cam: false, simple: false, last: None, beats: Vec::new(), heights: Vec::new(), audio: Vec::new(), tz: 0, prog: "face", alert_at: -1e9, view: None, sounds: Vec::new(), back: Default::default(), back_img: None, ball: Default::default(), ball_img: None, ball_at: -1e9, gaze: (0.0, 0.0), hm: String::new(), date_short: String::new(), typing: false, woke_at: -1e9, car_at: -1e9, cam: None, door: None, alert_env: 0.0, desk_empty: true, sky: Default::default(), floor: Default::default(), drones: Default::default(), focus_k: 0.0, band: (0.0, 0.0), heavens: Default::default(), street: Default::default(), overhead: Default::default(), pushed: Vec::new(), lively: true, weather: Default::default(), primary: true, git_flash: Default::default(), git_fail: Default::default(), git_pos: Vec::new() }
     }
 }
 
@@ -534,9 +536,10 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
                 cam: cam.as_ref().map(|c| (c.0.as_str(), c.1.as_slice())), door: door.as_ref().map(|c| (c.0.as_str(), c.1.as_slice())),
             };
             // the sphere's picture is made in the screen's own pixels (a HiDPI screen gets twice as many), at most 2x as the web page
-            // the sphere turns slowly: a new picture 15 times a second is as smooth as more, and costs a third of 45
             let px_d = ((rr * win.scale_factor().clamp(1.0, 2.0) * 2.0).round() as usize).max(16);
-            let fresh = world.ball_img.is_none() || world.ball.d != px_d || t - world.ball_at >= 1.0 / 15.0 || still_l;
+            // a new picture every frame: the LEDs move as smoothly as the rest (a picture every other frame made them
+            // step out of time with the scene)
+            let fresh = world.ball_img.is_none() || world.ball.d != px_d || t != world.ball_at;
             if fresh {
                 world.ball_at = t;
                 crate::perf::time("sphere", || world.ball.frame(&feed, rr * win.scale_factor().clamp(1.0, 2.0)));
@@ -558,17 +561,11 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
             }
             // the sphere's picture, and its reflection on the wet floor (the same picture upside down, at 20%)
             let d = world.ball.d;
-            if fresh && d > 0 && world.ball.out.len() == d * d * 4 {
+            if fresh && d > 0 && world.ball.out.len() == d * d * 4 && world.ball.refl.len() == d * d * 4 {
                 let frame = |bytes: Vec<u8>| image::RgbaImage::from_raw(d as u32, d as u32, bytes).map(|im| std::sync::Arc::new(gpui::RenderImage::new(vec![image::Frame::new(im)])));
-                let mut flip = vec![0u8; d * d * 4];
-                for y in 0..d {
-                    let (src, dst) = ((d - 1 - y) * d * 4, y * d * 4);
-                    flip[dst..dst + d * 4].copy_from_slice(&world.ball.out[src..src + d * 4]);
-                }
-                for px4 in flip.chunks_exact_mut(4) {
-                    px4[3] = (px4[3] as f32 * 0.2) as u8;
-                }
-                if let (Some(a), Some(b)) = (frame(world.ball.out.clone()), frame(flip)) {
+                // the buffers go to the GPU as they are (no copy); the sphere makes new ones next frame
+                let (out, refl) = (std::mem::take(&mut world.ball.out), std::mem::take(&mut world.ball.refl));
+                if let (Some(a), Some(b)) = (frame(out), frame(refl)) {
                     if let Some((oa, ob)) = world.ball_img.replace((a, b)) {
                         let _ = win.drop_image(oa);
                         let _ = win.drop_image(ob);
@@ -793,6 +790,12 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
     }
     world.bursts.retain(|b| t - b.0 < 2.6);
     lap.mark("code-over");
+    // what moves fast enough to need every frame: the music, falling rain or snow, fireworks, a launch, a shooting
+    // star, the pointer the face follows, a text typing. Without any of it the scene moves slowly and 12 frames a
+    // second are enough (main.rs)
+    let falling = matches!(crate::ui::wx_kind(code), "rain" | "storm" | "snow");
+    let pointing = world.pointer.map(|p| t - p.2 < 3.0).unwrap_or(false);
+    world.lively = !world.audio.is_empty() || falling || world.overhead.busy() || world.rockets.busy() || world.heavens.busy() || pointing || world.typing || t - world.alert_at < 8.0;
     crate::draw::vignette(win, ox, oy, w, h); // pulse.css #vig: the edges of the picture a little darker
     // the drones' tags, over the scene (on the web page they are HTML over the canvas); hidden in privacy
     if !(get(st, &["privacy"]).as_bool().unwrap_or(false) || get(st, &["screencast"]).as_bool().unwrap_or(false)) {

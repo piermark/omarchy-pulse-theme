@@ -50,12 +50,16 @@ pub fn darkness(st: &Value) -> (f32, f32, f32) {
 
 impl Sky {
     /// pulse.js cloudSprites(): four clouds, each painted once as a picture: round masses lit from the side of the Sun
-    /// or the Moon, darker underneath, a flat base. `alpha` is how solid they are now (it is part of the picture).
-    fn sprites(&mut self, win: &mut Window, base: Rgb, light: Option<(Rgb, bool, bool)>, storm: bool, fg: Rgb, alpha: f32) {
+    /// or the Moon, darker underneath, a flat base. Made at twice the web page's size, with smaller puffs along the
+    /// top (the cauliflower of a real cumulus), the edge toward the light catching it, and at night the city's light
+    /// on their bellies. `alpha` is how solid they are now (it is part of the picture).
+    #[allow(clippy::too_many_arguments)]
+    fn sprites(&mut self, win: &mut Window, base: Rgb, light: Option<(Rgb, bool, bool)>, storm: bool, fg: Rgb, alpha: f32, under: (Rgb, f32)) {
         let lc = match light { Some((c, sun, _)) => mixi(base, c, if sun { 0.75 } else { 0.45 }), None => mixi(base, fg, 0.25) };
         let sh = mixi(base, [0.0; 3], if storm { 0.5 } else { 0.3 });
         let ls: f32 = match light { Some((_, _, left)) => if left { -1.0 } else { 1.0 }, None => 0.0 };
-        let key = format!("{base:?}|{lc:?}|{ls}|{storm}|{:.2}", alpha);
+        let uq = (under.1 * 10.0).round() / 10.0;
+        let key = format!("{base:?}|{lc:?}|{ls}|{storm}|{:.2}|{:?}|{uq}", alpha, under.0);
         if key == self.cloud_key && !self.sprites.is_empty() {
             return;
         }
@@ -63,31 +67,64 @@ impl Sky {
         for old in self.sprites.drain(..) {
             let _ = win.drop_image(old);
         }
+        const S: f32 = 2.0; // the web page's 320×120, at twice the pixels
+        let ts = Transform::from_scale(S, S);
+        let puff = |pm: &mut Pixmap, x: f32, y: f32, r: f32, inner: Rgb, mid: Rgb, outer: Rgb, a0: f32, a1: f32| {
+            let stops = vec![GradientStop::new(0.0, col(inner, a0)), GradientStop::new(0.55, col(mid, a1)), GradientStop::new(1.0, col(outer, 0.0))];
+            if let (Some(shd), Some(path)) = (RadialGradient::new((x + ls * r * 0.35, y - r * 0.4).into(), (x, y).into(), r, stops, SpreadMode::Pad, Transform::identity()), PathBuilder::from_circle(x, y, r)) {
+                pm.fill_path(&path, &Paint { shader: shd, anti_alias: true, ..Default::default() }, FillRule::Winding, ts, None);
+            }
+        };
         for v in 0..4u64 {
-            let Some(mut pm) = Pixmap::new(320, 120) else { return };
+            let Some(mut pm) = Pixmap::new((320.0 * S) as u32, (120.0 * S) as u32) else { return };
             let mut rn = Rnd::new(900 + v * 17);
             let n = 9 + v * 2;
+            let mut tops = Vec::new();
             for i in 0..n {
+                // pulse.js: the masses along an arch
                 let u = i as f32 / (n - 1) as f32;
                 let px0 = 40.0 + u * 240.0 + (rn.next() - 0.5) * 24.0;
                 let env = (std::f32::consts::PI * (0.08 + 0.84 * u)).sin();
                 let r = 16.0 + env * (20.0 + rn.next() * 14.0);
                 let py0 = 78.0 - env * (10.0 + rn.next() * 16.0);
-                let stops = vec![GradientStop::new(0.0, col(lc, 0.95)), GradientStop::new(0.55, col(base, 0.85)), GradientStop::new(1.0, col(sh, 0.0))];
-                if let (Some(shd), Some(path)) = (RadialGradient::new((px0 + ls * r * 0.35, py0 - r * 0.4).into(), (px0, py0).into(), r, stops, SpreadMode::Pad, Transform::identity()), PathBuilder::from_circle(px0, py0, r)) {
-                    pm.fill_path(&path, &Paint { shader: shd, anti_alias: true, ..Default::default() }, FillRule::Winding, Transform::identity(), None);
+                puff(&mut pm, px0, py0, r, lc, base, sh, 0.95, 0.85);
+                tops.push((px0, py0, r));
+            }
+            // the cauliflower: smaller, brighter puffs on the upper edge of every mass
+            let mut rd = Rnd::new(7000 + v * 31);
+            for &(px0, py0, r) in &tops {
+                for _ in 0..3 {
+                    let a = -std::f32::consts::PI * (0.15 + rd.next() * 0.7);
+                    let (x, y) = (px0 + a.cos() * r * 0.62, py0 + a.sin() * r * 0.62);
+                    puff(&mut pm, x, y, r * (0.32 + rd.next() * 0.2), mixi(lc, fg, 0.12), lc, base, 0.7, 0.45);
                 }
             }
-            // a flat, darker base
+            // the edge toward the light catches it
+            if ls != 0.0 {
+                let (lx, ly) = (160.0 + ls * 150.0, 20.0);
+                let stops = vec![GradientStop::new(0.0, col(mixi(lc, fg, 0.3), 0.45)), GradientStop::new(1.0, col(lc, 0.0))];
+                if let (Some(shd), Some(rc)) = (RadialGradient::new((lx, ly).into(), (lx, ly).into(), 170.0, stops, SpreadMode::Pad, Transform::identity()), Rect::from_xywh(0.0, 0.0, 320.0, 120.0)) {
+                    pm.fill_rect(rc, &Paint { shader: shd, blend_mode: BlendMode::SourceAtop, anti_alias: false, ..Default::default() }, ts, None);
+                }
+            }
+            // at night the city lights their bellies from below
+            if under.1 > 0.02 {
+                let g = vec![GradientStop::new(0.0, col(under.0, 0.0)), GradientStop::new(1.0, col(under.0, under.1))];
+                if let (Some(shd), Some(rc)) = (LinearGradient::new((0.0, 50.0).into(), (0.0, 100.0).into(), g, SpreadMode::Pad, Transform::identity()), Rect::from_xywh(0.0, 40.0, 320.0, 80.0)) {
+                    pm.fill_rect(rc, &Paint { shader: shd, blend_mode: BlendMode::SourceAtop, anti_alias: false, ..Default::default() }, ts, None);
+                }
+            }
+            // a flat, darker base (pulse.js)
             let fl = vec![GradientStop::new(0.0, col(sh, 0.0)), GradientStop::new(0.5, col(sh, 0.5)), GradientStop::new(1.0, col(sh, 0.0))];
             if let (Some(shd), Some(r)) = (LinearGradient::new((0.0, 70.0).into(), (0.0, 104.0).into(), fl, SpreadMode::Pad, Transform::identity()), Rect::from_xywh(0.0, 70.0, 320.0, 40.0)) {
-                pm.fill_rect(r, &Paint { shader: shd, blend_mode: BlendMode::SourceAtop, anti_alias: false, ..Default::default() }, Transform::identity(), None);
+                pm.fill_rect(r, &Paint { shader: shd, blend_mode: BlendMode::SourceAtop, anti_alias: false, ..Default::default() }, ts, None);
             }
             let cut = vec![GradientStop::new(0.0, Color::from_rgba8(0, 0, 0, 0)), GradientStop::new(1.0, Color::from_rgba8(0, 0, 0, 255))];
             if let (Some(shd), Some(r)) = (LinearGradient::new((0.0, 88.0).into(), (0.0, 112.0).into(), cut, SpreadMode::Pad, Transform::identity()), Rect::from_xywh(0.0, 88.0, 320.0, 32.0)) {
-                pm.fill_rect(r, &Paint { shader: shd, blend_mode: BlendMode::DestinationOut, anti_alias: false, ..Default::default() }, Transform::identity(), None);
+                pm.fill_rect(r, &Paint { shader: shd, blend_mode: BlendMode::DestinationOut, anti_alias: false, ..Default::default() }, ts, None);
             }
             // premultiplied RGBA to the straight BGRA the GPU takes, with the clouds' alpha in it
+            let (pw, ph) = (pm.width(), pm.height());
             let mut px4 = pm.take();
             for p in px4.chunks_exact_mut(4) {
                 let a = p[3] as f32 / 255.0;
@@ -99,7 +136,7 @@ impl Sky {
                 }
                 p[3] = (p[3] as f32 * alpha.clamp(0.0, 1.0)) as u8;
             }
-            if let Some(im) = image::RgbaImage::from_raw(320, 120, px4) {
+            if let Some(im) = image::RgbaImage::from_raw(pw, ph, px4) {
                 self.sprites.push(Arc::new(gpui::RenderImage::new(vec![image::Frame::new(im)])));
             }
         }
@@ -127,7 +164,8 @@ impl Sky {
         let kmh = unit * (num(st, &["weather", "wind"]).unwrap_or(0.0) as f32).max(num(st, &["weather", "gust"]).unwrap_or(0.0) as f32 * 0.8);
         let wind_x = (num(st, &["weather", "windDir"]).unwrap_or(270.0) as f32).to_radians().sin() * (kmh / 60.0).min(1.0);
         let a = (if storm { 0.55 } else { 0.22 + 0.25 * cov }) * (cov * 1.4).min(1.0);
-        self.sprites(win, base, light.map(|l| (c255(l.0), l.1, l.2 < w / 2.0)), storm, fg, (a * 1.9).min(1.0));
+        let under = (mixi(c255(pal.accent2), c255(pal.warn), 0.25), 0.35 * d);
+        self.sprites(win, base, light.map(|l| (c255(l.0), l.1, l.2 < w / 2.0)), storm, fg, (a * 1.9).min(1.0), under);
         for c in self.clouds.iter_mut().take(n) {
             let (cw, ch) = (w * 0.14 * c[2], h * 0.045 * c[2]);
             // the web page moves them a step a frame at 20 frames a second: the same speed here at any frame rate. A

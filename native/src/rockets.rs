@@ -62,6 +62,10 @@ fn body(win: &mut Window, xf: &Xf, pal: &Pal, big: bool, rw: f32, rh: f32, stage
 }
 
 impl Rockets {
+    pub fn busy(&self) -> bool {
+        !self.all.is_empty()
+    }
+
     pub fn launch(&mut self, t: f32, name: String, big: bool) {
         self.all.push(Liftoff { t, name, big, trail: Vec::new(), sep: None });
     }

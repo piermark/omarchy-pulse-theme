@@ -70,6 +70,8 @@ pub struct Sphere {
     map: Option<Map>,
     /// the sphere's picture, D×D, BGRA
     pub out: Vec<u8>,
+    /// the same picture upside down at 20%: its reflection on the wet floor
+    pub refl: Vec<u8>,
     pub d: usize,
     /// the average colour on screen (0..255): the halo and the light on the plaza take it
     pub avg: Rgb,
@@ -392,7 +394,7 @@ impl Sphere {
                 led.push((phi, j as f32 / n as f32 * TAU));
             }
         }
-        Sphere { tex: Pixmap::new((TW * TX) as u32, (TH * TX) as u32).expect("the sphere's texture"), font, glyphs: Default::default(), map: None, out: Vec::new(), d: 0, avg: [0.0; 3], prog_i: 0, prog_at: 0.0, prog: "face", led, pics: Default::default() }
+        Sphere { tex: Pixmap::new((TW * TX) as u32, (TH * TX) as u32).expect("the sphere's texture"), font, glyphs: Default::default(), map: None, out: Vec::new(), refl: Vec::new(), d: 0, avg: [0.0; 3], prog_i: 0, prog_at: 0.0, prog: "face", led, pics: Default::default() }
     }
 
     /// pulse.js sphereProgram(): what is urgent first, then the face, the music, and the programmes in turn.
@@ -762,8 +764,14 @@ impl Sphere {
         let d = ((radius * 2.0).round() as usize).max(16);
         if self.map.as_ref().map(|m| m.d != d).unwrap_or(true) {
             self.map = Some(Self::make_map(d));
-            self.out = vec![0; d * d * 4];
             self.d = d;
+        }
+        // the buffers go to the GPU every frame (taken, not copied): new ones of the right size
+        if self.out.len() != d * d * 4 {
+            self.out = vec![0; d * d * 4];
+        }
+        if self.refl.len() != d * d * 4 {
+            self.refl = vec![0; d * d * 4];
         }
         let t = f.t as f32;
         let music = !f.audio.is_empty();
@@ -815,6 +823,14 @@ impl Sphere {
                     }
                 }
             }
+            for y in 0..d {
+                let (src, dst) = (y * d * 4, (d - 1 - y) * d * 4);
+                for x in 0..d {
+                    let (a, b) = (src + x * 4, dst + x * 4);
+                    self.refl[b..b + 3].copy_from_slice(&self.out[a..a + 3].to_vec());
+                    self.refl[b + 3] = (self.out[a + 3] as f32 * 0.2) as u8;
+                }
+            }
             self.avg = c255(f.pal.accent2);
             return rot;
         }
@@ -825,30 +841,44 @@ impl Sphere {
         let (mut sr, mut sg, mut sb, mut cnt) = (0.0f32, 0.0f32, 0.0f32, 0u32);
         // 0.7 + 0.3 * sqrt(sin(x * PI)), looked up instead of computed for every pixel
         let shade: [f32; 256] = std::array::from_fn(|i| 0.7 + 0.3 * ((i as f32 + 0.5) / 256.0 * PI).sin().sqrt());
-        for i in 0..d * d {
-            let o = i * 4;
-            let v = m.v[i];
-            if v < 0 {
-                self.out[o + 3] = 0;
-                continue;
-            }
-            let q = (m.lam[i] + rot) / TAU;
-            let uu = q - q.floor();
-            let u = ((uu * twp as f32) as usize).min(twp - 1);
-            let ti = (v as usize * twp + u) * 4;
-            let cq = uu * cols * m.cos[i];
-            let col_f = cq - cq.floor(); // between two columns: darker
-            let k = m.k[i] * shade[((col_f * 255.0) as usize).min(255)] * lift;
-            let (r, g, b) = (td[ti] as f32, td[ti + 1] as f32, td[ti + 2] as f32);
-            self.out[o] = (b * k + bg_b).min(255.0) as u8;
-            self.out[o + 1] = (g * k + bg_g).min(255.0) as u8;
-            self.out[o + 2] = (r * k + bg_r).min(255.0) as u8;
-            self.out[o + 3] = m.a[i];
-            if i & 15 == 0 {
-                sr += r;
-                sg += g;
-                sb += b;
-                cnt += 1;
+        // the picture and, in the same pass, its reflection (upside down, at 20%) for the wet floor
+        let twf = twp as f32;
+        for y in 0..d {
+            let ry = (d - 1 - y) * d;
+            for x in 0..d {
+                let i = y * d + x;
+                let (o, ro) = (i * 4, (ry + x) * 4);
+                let v = m.v[i];
+                if v < 0 {
+                    self.out[o + 3] = 0;
+                    self.refl[ro + 3] = 0;
+                    continue;
+                }
+                let q = (m.lam[i] + rot) / TAU;
+                let uu = q - q.floor();
+                // between two texels: mixed by how far, so the content glides around the sphere instead of
+                // stepping a texel at a time (pulse.js takes the nearest one)
+                let uf = uu * twf;
+                let u0 = (uf as usize).min(twp - 1);
+                let u1 = if u0 + 1 >= twp { 0 } else { u0 + 1 };
+                let fu = uf - u0 as f32;
+                let row = v as usize * twp;
+                let (t0, t1) = ((row + u0) * 4, (row + u1) * 4);
+                let cq = uu * cols * m.cos[i];
+                let col_f = cq - cq.floor(); // between two columns: darker
+                let k = m.k[i] * shade[((col_f * 255.0) as usize).min(255)] * lift;
+                let r = td[t0] as f32 * (1.0 - fu) + td[t1] as f32 * fu;
+                let g = td[t0 + 1] as f32 * (1.0 - fu) + td[t1 + 1] as f32 * fu;
+                let b = td[t0 + 2] as f32 * (1.0 - fu) + td[t1 + 2] as f32 * fu;
+                let px4 = [(b * k + bg_b).min(255.0) as u8, (g * k + bg_g).min(255.0) as u8, (r * k + bg_r).min(255.0) as u8, m.a[i]];
+                self.out[o..o + 4].copy_from_slice(&px4);
+                self.refl[ro..ro + 4].copy_from_slice(&[px4[0], px4[1], px4[2], (m.a[i] as f32 * 0.2) as u8]);
+                if i & 15 == 0 {
+                    sr += r;
+                    sg += g;
+                    sb += b;
+                    cnt += 1;
+                }
             }
         }
         if cnt > 0 {

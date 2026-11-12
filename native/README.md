@@ -4,7 +4,7 @@ A parallel renderer for Omarchy Pulse. The web page stays the default (and is wh
 paints the same wallpaper natively on the GPU, with no browser underneath. It reads the same hub: the same
 `omarchy-pulse` service, the same token and the same `pulse.toml`.
 
-**Status: 0.13, experimental.** The port is being redone as a line-by-line translation of the published web page,
+**Status: 0.14, experimental.** The port is being redone as a line-by-line translation of the published web page,
 so that it looks and moves as Pulse 1.8 does. Translated so far: the panels, the clock and the ticker (pulse.css in
 rem: the same layout on every screen, at its full resolution), INCOMING and the effect text, the sphere (texture,
 face, programmes, gaze, LED map), the far city and the skyline of where you live, the clouds, the planes (which go
@@ -21,9 +21,12 @@ datacenter's halls, the banner plane, the balloon with a tip or the news); and i
 the ring of a focus) and the hacker scene's radar. The neo-noir scene is still the earlier drawing.
 
 **CPU**: the panels are a view of their own, made again only when they change (a new state, a new second, a text
-typing out) and otherwise drawn again from what GPUI kept; the sphere gets a new picture 15 times a second; every
-letter on the sphere is drawn once and kept; gradients are small pictures kept on the GPU, their colours in 32
-steps so they stay few; the state is shared instead of copied. A frame that costs more than half its time lowers
+typing out) and otherwise drawn again from what GPUI kept; the sphere's LEDs glide (each pixel mixes the two
+texels it falls between) and its reflection is made in the same pass; every letter on the sphere is drawn once and
+kept; gradients are small pictures kept on the GPU, their colours in 32
+steps so they stay few; the state is shared instead of copied; frames come at an even pace; when nothing fast
+moves (no music, no rain or snow falling, no fireworks, no launch, no pointer to follow) 12 frames a second are
+drawn, all of them when something does. A frame that costs more than half its time lowers
 the frame rate as pulse.js does, and the wallpaper keeps under a CPU budget: `--cpu N` (or `PULSE_CPU`) is the
 most of one core it may use, 15% by default; the frames a second come down until a second of frames costs no
 more than that (never under 8). `--fps N` (or `[pulse] fps`) sets the most; `motion = "reduced"` draws 4 a
