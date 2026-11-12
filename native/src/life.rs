@@ -8,6 +8,7 @@ use crate::scene::{disc, glow, rect, PlaneMark, Rand};
 use gpui::{point, px, PathBuilder, Window};
 use serde_json::Value;
 
+#[derive(Clone, Copy)]
 pub struct Frame {
     pub w: f32,
     pub h: f32,

@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 pub const DEFAULT_PORT: u16 = 47800;
 /// Pulse's own scenes; any other name is a scene of yours (the editor's, the community's, or one in code).
-pub const BUILTIN: [&str; 7] = ["sphere", "skyline", "orbit", "calm", "hacker", "noir", "city"];
+pub const BUILTIN: [&str; 9] = ["sphere", "skyline", "orbit", "calm", "hacker", "noir", "city", "mars", "monolith"];
 
 /// What the hub said last, and when.
 #[derive(Clone, Default)]
@@ -20,6 +20,10 @@ pub struct Snapshot {
     pub design: Option<(String, Value)>,
     /// a scene in code (JavaScript): the web page runs it; this renderer says so and shows the skyline
     pub handwritten: Option<String>,
+    /// your own wallpaper ([pulse] wallpaper): its version and the picture, read by the hub from your disk
+    pub wall: Option<(String, Vec<u8>)>,
+    /// the cover of the song that plays ([music] colors): its version and the picture
+    pub cover: Option<(String, Vec<u8>)>,
 }
 
 pub type Shared = Arc<Mutex<Snapshot>>;
@@ -30,8 +34,39 @@ pub struct Fx {
     pub kind: String,
     pub text: String,
     pub small: bool,
+    /// everything the hub said about it (an earthquake's magnitude, where it came from)
+    pub raw: Value,
 }
-pub type FxQueue = Arc<Mutex<Vec<Fx>>>;
+
+/// What the live channel brings between two states: the effects, the music's bars, the pointer.
+#[derive(Default)]
+pub struct Live {
+    pub fx: Vec<Fx>,
+    pub audio: Vec<f32>,
+    pub audio_at: Option<Instant>,
+    /// the pointer in the desktop's pixels (the hub reads it from the compositor), and when it last moved
+    pub cursor: Option<(f32, f32)>,
+    pub cursor_at: Option<Instant>,
+}
+pub type FxQueue = Arc<Mutex<Live>>;
+
+/// A POST to the hub from a click (acknowledge an incident, a panel's command): sent from its own thread, so the
+/// wallpaper never waits for it.
+pub fn post(base: &str, path: &str) {
+    let sep = if path.contains('?') { '&' } else { '?' };
+    let url = format!("{base}{path}{sep}token={}", token());
+    let _ = std::thread::Builder::new().name("pulse-post".into()).spawn(move || {
+        let _ = ureq::AgentBuilder::new().timeout(Duration::from_secs(4)).build().post(&url).call();
+    });
+}
+
+fn bytes_of(agent: &ureq::Agent, url: &str) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let resp = agent.get(url).call().ok()?;
+    let mut out = Vec::new();
+    resp.into_reader().take(40 << 20).read_to_end(&mut out).ok()?;
+    if out.is_empty() { None } else { Some(out) }
+}
 
 pub fn config_dir() -> PathBuf {
     if let Ok(x) = std::env::var("XDG_CONFIG_HOME") {
@@ -90,6 +125,17 @@ pub fn start(base: String, token: String) -> Shared {
                                     }
                                 }
                             }
+                            // your own wallpaper and the song's cover: fetched once for each version
+                            for (key, path, is_wall) in [(text(&v, &["ui", "wallpaper", "v"]), "wallpaper", true), (text(&v, &["ui", "musicCover", "v"]), "cover", false)] {
+                                let slot = if is_wall { &mut s.wall } else { &mut s.cover };
+                                if key.is_empty() {
+                                    *slot = None;
+                                } else if slot.as_ref().map(|x| x.0 != key).unwrap_or(true) {
+                                    if let Some(b) = bytes_of(&agent, &format!("{base}/api/{path}?token={token}&v={key}")) {
+                                        *slot = Some((key, b));
+                                    }
+                                }
+                            }
                             s.state = v;
                             s.at = Some(Instant::now());
                             s.error = None;
@@ -107,7 +153,7 @@ pub fn start(base: String, token: String) -> Shared {
 /// The hub's live channel (/api/live, server-sent events): the effects, as the web page hears them. It reconnects
 /// by itself; only effects asked after this program started are played.
 pub fn start_live(base: String, token: String) -> FxQueue {
-    let q: FxQueue = Arc::new(Mutex::new(Vec::new()));
+    let q: FxQueue = Arc::new(Mutex::new(Live::default()));
     let out = q.clone();
     std::thread::Builder::new()
         .name("pulse-live".into())
@@ -123,15 +169,26 @@ pub fn start_live(base: String, token: String) -> FxQueue {
                         let Ok(v) = serde_json::from_str::<Value>(data) else { continue };
                         let fx: Vec<Fx> = list(&v, &["fx"])
                             .iter()
-                            .map(|f| Fx { kind: text(f, &["kind"]), text: text(f, &["text"]), small: get(f, &["small"]).as_bool().unwrap_or(false) })
+                            .map(|f| Fx { kind: text(f, &["kind"]), text: text(f, &["text"]), small: get(f, &["small"]).as_bool().unwrap_or(false), raw: f.clone() })
                             .collect();
-                        if !fx.is_empty() {
-                            if let Ok(mut g) = out.lock() {
-                                g.extend(fx);
-                                let n = g.len();
-                                if n > 32 {
-                                    g.drain(0..n - 32);
-                                }
+                        let audio: Vec<f32> = list(&v, &["a"]).iter().filter_map(|x| x.as_f64().map(|n| n as f32)).collect();
+                        let cursor = match (get(&v, &["c"]).get(0).and_then(Value::as_f64), get(&v, &["c"]).get(1).and_then(Value::as_f64)) {
+                            (Some(x), Some(y)) => Some((x as f32, y as f32)),
+                            _ => None,
+                        };
+                        if let Ok(mut g) = out.lock() {
+                            if !audio.is_empty() {
+                                g.audio = audio;
+                                g.audio_at = Some(Instant::now());
+                            }
+                            if cursor.is_some() && cursor != g.cursor {
+                                g.cursor = cursor;
+                                g.cursor_at = Some(Instant::now());
+                            }
+                            g.fx.extend(fx);
+                            let n = g.fx.len();
+                            if n > 32 {
+                                g.fx.drain(0..n - 32);
                             }
                         }
                     }

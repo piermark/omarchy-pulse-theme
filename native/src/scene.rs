@@ -58,11 +58,48 @@ pub struct World {
     /// the words of the last effect, and when
     pub say: Option<(f64, String)>,
     seed: u64,
+    /// scene orbit: where each core's moon is on its ring
+    pub rings: Vec<f32>,
+    /// the rest of the world (storms, seasons, earthquakes, the garden...) and what it keeps
+    pub more: crate::extra::Mem,
+    /// the scenes in code (mars, monolith) and what they keep
+    pub code: crate::worlds::Mem,
+    /// words the scene wants written, and what a click can find: made new at every frame
+    pub labels: Vec<crate::draw::Label>,
+    pub hits: Vec<crate::draw::Hit>,
+    /// the sphere (or the dome) on the screen: centre and radius, for what main.rs writes on it
+    pub centre: Option<(f32, f32, f32)>,
+    /// where the pointer is, in the wallpaper's pixels, and when it last moved (the face looks at you)
+    pub pointer: Option<(f32, f32, f64)>,
+    /// your own picture is the background ([pulse] wallpaper, mode "live"): only Pulse's live things are drawn
+    pub wall: bool,
+    /// [pulse] secondary = "simple" on a second monitor: the sky, the city and the centre, nothing else
+    pub simple: bool,
+    /// the last frame's measures, for an effect that needs a place
+    pub last: Option<crate::life::Frame>,
+    /// the music's bars, from the hub's live channel (empty when nothing plays)
+    pub audio: Vec<f32>,
+    /// the local time's offset in seconds, for a scene's clock
+    pub tz: i64,
+    /// what the sphere shows now: its face, or one of its programmes (the clock, the weather, the CPU, the news...)
+    pub prog: &'static str,
+    /// when the last alert came (the sphere turns to it)
+    pub alert_at: f64,
+    /// what a scene in code sees, made once for each state of the hub
+    view: Option<(f64, Value)>,
+    /// effects the scenes asked for that make a sound: main.rs plays them
+    pub sounds: Vec<&'static str>,
 }
 
 impl World {
     /// An effect from the hub: the same kinds the web page plays.
     pub fn fx(&mut self, kind: &str, text: &str, small: bool, t: f64) {
+        self.fx_raw(kind, text, small, t, &Value::Null)
+    }
+
+    /// The same, with everything the hub said about it (an earthquake's magnitude and direction).
+    pub fn fx_raw(&mut self, kind: &str, text: &str, small: bool, t: f64, raw: &Value) {
+        crate::extra::event(&mut self.more, kind, raw, t, self.last.as_ref());
         self.seed = self.seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
         let mut r = Rand::new(self.seed);
         match kind {
@@ -71,9 +108,13 @@ impl World {
                 let big = name.to_lowercase().contains("starship");
                 self.liftoffs.push((t, name, big));
             }
-            "lightning" => self.flash = t,
+            "lightning" => {}
             "shooting" => self.shooting.push((t, 0.1 + r.next() * 0.5, 0.04 + r.next() * 0.12)),
-            "banner" | "tip" | "chime" | "text" | "flare" => {}
+            "banner" | "tip" | "chime" | "text" | "say" | "flare" | "quake" | "tsunami" | "build" | "doorbell" | "train" | "summary" | "starlink" | "car" | "push" | "commit" | "iss" => {
+                if kind == "iss" {
+                    self.shooting.push((t, 0.1, 0.08));
+                }
+            }
             _ => {
                 let n = if small { 2 } else { 6 };
                 for i in 0..n {
@@ -114,7 +155,7 @@ impl World {
             })
             .collect();
         let drops = (0..900).map(|_| (r.next(), r.next(), 0.5 + r.next() * 0.5, r.next())).collect();
-        World { stars, city, clouds, drops, last_t: 0.0, sl: Vec::new(), iss: None, iss_trail: Vec::new(), liftoffs: Vec::new(), bursts: Vec::new(), flash: 0.0, shooting: Vec::new(), say: None, seed: 42 }
+        World { stars, city, clouds, drops, last_t: 0.0, sl: Vec::new(), iss: None, iss_trail: Vec::new(), liftoffs: Vec::new(), bursts: Vec::new(), flash: 0.0, shooting: Vec::new(), say: None, seed: 42, rings: Vec::new(), more: Default::default(), code: Default::default(), labels: Vec::new(), hits: Vec::new(), centre: None, pointer: None, wall: false, simple: false, last: None, audio: Vec::new(), tz: 0, prog: "face", alert_at: -1e9, view: None, sounds: Vec::new() }
     }
 }
 
@@ -181,7 +222,7 @@ pub(crate) fn gradient(win: &mut Window, x: f32, y: f32, w: f32, h: f32, top: C,
 }
 
 /// What the face on the sphere feels: your most urgent agent decides, as on the web page (faceMood).
-fn face_mood(st: &Value) -> &'static str {
+pub(crate) fn face_mood(st: &Value) -> &'static str {
     if get(st, &["away"]).as_bool().unwrap_or(false) {
         return "sleep";
     }
@@ -201,7 +242,7 @@ fn face_mood(st: &Value) -> &'static str {
 
 /// Is the point (x, y), in units of the face's size, on one of the face's lit features? Pulse 1.8's face (drawFace):
 /// two tall rounded eyes that blink, look up when it thinks, widen when it needs you; a mouth for every mood.
-fn face_lit(x: f32, y: f32, mood: &str, t: f32) -> bool {
+pub(crate) fn face_lit(x: f32, y: f32, mood: &str, t: f32) -> bool {
     let seg = |ax: f32, ay: f32, bx: f32, by: f32, th: f32| -> bool {
         let (dx, dy) = (bx - ax, by - ay);
         let k = (((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
@@ -268,8 +309,9 @@ fn face_lit(x: f32, y: f32, mood: &str, t: f32) -> bool {
 /// Its face follows your AI agents; the CPU runs round its lower rows; a halo in its own colour, and its light on
 /// the floor.
 #[allow(clippy::too_many_arguments)]
-fn led_sphere(win: &mut Window, cx: f32, cy: f32, r: f32, st: &Value, pal: &Pal, t: f32, u: f32) {
+fn led_sphere(win: &mut Window, cx: f32, cy: f32, r: f32, st: &Value, pal: &Pal, t: f32, u: f32, gaze: (f32, f32), prog: &str, audio: &[f32]) {
     let mood = face_mood(st);
+    let cores: Vec<f32> = list(st, &["sys", "cores"]).iter().filter_map(|c| c.as_f64().map(|v| (v as f32 / 100.0).clamp(0.02, 1.0))).take(32).collect();
     let face_c = match mood { "alert" => pal.warn, "sad" => pal.crit, _ => mix(pal.warn, [1.0, 0.95, 0.4], 0.35) };
     let cpu = (num(st, &["sys", "cpu"]).unwrap_or(0.0) as f32 / 100.0).clamp(0.0, 1.0);
     glow(win, cx, cy, r * 1.8, face_c, 0.22);
@@ -287,7 +329,21 @@ fn led_sphere(win: &mut Window, cx: f32, cy: f32, r: f32, st: &Value, pal: &Pal,
             let (x, y) = (phi.cos() * lam.sin(), -phi.sin());
             let facing = phi.cos() * lam.cos(); // 1 at the centre, 0 at the edge: the curve
             let s = 0.86; // the face's size, of the radius
-            let lit = face_lit(x / s, y / s, mood, t);
+            let lit = match prog {
+                // the face looks where the pointer is
+                "face" => face_lit((x - gaze.0 * 0.10) / s, (y - gaze.1 * 0.07) / s, mood, t),
+                // a bar for each core, or for each band of the music
+                "cpu" | "music" => {
+                    let bars: Vec<f32> = if prog == "music" && !audio.is_empty() { audio.iter().map(|v| v.clamp(0.03, 1.0)).collect() } else if prog == "music" { (0..16).map(|i| 0.2 + 0.6 * (t * (2.0 + i as f32 * 0.4) + i as f32).sin().abs()).collect() } else { cores.clone() };
+                    let n = bars.len().max(1);
+                    let fx = (x + 0.72) / 1.44;
+                    (0.0..1.0).contains(&fx) && (fx * n as f32).fract() < 0.72 && y < 0.42 && y > 0.42 - bars[((fx * n as f32) as usize).min(n - 1)] * 0.62
+                }
+                "alert" => ((x * x + y * y).sqrt() * 6.0 - t * 4.0).rem_euclid(2.0) < 0.5,
+                // the other programmes are words (main.rs writes them): a thin frame of light round them
+                _ => (y.abs() - 0.50).abs() < 0.022 && x.abs() < 0.62,
+            };
+            let face_c = if prog == "alert" { pal.crit } else if matches!(prog, "face") { face_c } else { mix(pal.accent, pal.accent2, (y + 0.5).clamp(0.0, 1.0)) };
             // the CPU as a ring of light running round the lower rows
             let band = y > 0.62 && y < 0.80 && ((lam / pi + 0.5 + t * 0.06).rem_euclid(1.0)) < cpu;
             let (c, a) = if lit { (face_c, 1.0) } else if band { (pal.accent, 0.85) } else { (dark, 0.55) };
@@ -302,6 +358,42 @@ fn led_sphere(win: &mut Window, cx: f32, cy: f32, r: f32, st: &Value, pal: &Pal,
     gradient(win, cx - r * 0.55, cy - r * 0.92, r * 1.1, r * 0.5, [1.0, 1.0, 1.0], 0.05, [1.0, 1.0, 1.0], 0.0);
 }
 
+/// What the sphere shows now, as the web page chooses it (progNow): what is urgent first, then its face while your
+/// agents work or you are near, the music, and otherwise its programmes in turn, eleven seconds each.
+pub fn sphere_prog(st: &Value, t: f64, watching: bool, alert: bool) -> &'static str {
+    let now = num(st, &["t"]).unwrap_or(0.0);
+    let face = get(st, &["ui", "face"]).as_str().unwrap_or("agents").to_string();
+    if alert {
+        return "alert";
+    }
+    if let Some(start) = list(st, &["calendar"]).first().and_then(|c| num(c, &["start"])) {
+        if start - now > 0.0 && start - now <= 60.0 {
+            return "meeting";
+        }
+    }
+    if !get(st, &["listen"]).is_null() || get(st, &["speaking"]).as_bool().unwrap_or(false) {
+        return "face";
+    }
+    if let Some(net) = num(st, &["space", "launch", "net"]) {
+        if get(st, &["space", "launch", "status"]).as_str() == Some("Go") && net - now > 0.0 && net - now < 3600.0 {
+            return "launch";
+        }
+    }
+    if get(st, &["away"]).as_bool().unwrap_or(false) && face != "off" {
+        return "face";
+    }
+    if get(st, &["focus"]).is_object() {
+        return "focus";
+    }
+    if face != "off" && (!list(st, &["agents"]).is_empty() || face == "always" || watching) {
+        return "face";
+    }
+    if get(st, &["music"]).as_bool().unwrap_or(false) {
+        return "music";
+    }
+    ["clock", "weather", "cpu", "news"][((t / 11.0) as usize) % 4]
+}
+
 /// A plane on the screen: where, and what to write beside it (main.rs writes the text).
 pub struct PlaneMark {
     pub x: f32,
@@ -312,9 +404,20 @@ pub struct PlaneMark {
 }
 
 /// Paints the world for the time `t` (seconds) and returns the planes' places for their tags.
-pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t: f64, sphere: bool, bare: bool, win: &mut Window) -> Vec<PlaneMark> {
+pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t: f64, kind: &str, bare: bool, win: &mut Window) -> Vec<PlaneMark> {
+    let sphere = kind == "sphere";
+    let (orbit, calm, hacker, noir) = (kind == "orbit", kind == "calm", kind == "hacker", kind == "noir");
+    let (mars, monolith) = (kind == "mars", kind == "monolith");
+    let wall = world.wall;
+    let simple = world.simple;
+    let bare = bare || orbit || noir || mars || monolith || wall; // no near towers, no dome, no city life: the scene draws its own centre
     let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
     let (ox, oy) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
+    let (qx, qy) = crate::extra::shake(&mut world.more, t, h); // an earthquake shakes the whole picture
+    let (ox, oy) = (ox + qx, oy + qy);
+    world.labels.clear();
+    world.hits.clear();
+    world.centre = None;
     let hz = h * HORIZON;
     let u = h / 1080.0;
     let dt = if world.last_t > 0.0 { ((t - world.last_t) as f32).clamp(0.0, 0.25) } else { 0.0 };
@@ -341,11 +444,16 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
     let mx = |k: usize| -> C { [pn[k][0] * wn + pt[k][0] * wt + pd[k][0] * wd, pn[k][1] * wn + pt[k][1] * wt + pd[k][1] * wd, pn[k][2] * wn + pt[k][2] * wt + pd[k][2] * wd] };
     let over = cloud * 0.35; // an overcast sky is greyer
     let (top, midc, low) = (mix(mx(0), grey, over * 0.6), mix(mx(1), grey, over), mix(mx(2), grey, over * 0.8));
-    gradient(win, ox, oy, w, hz * 0.7 + 1.0, top, 1.0, midc, 1.0);
-    gradient(win, ox, oy + hz * 0.7, w, hz * 0.3 + 1.0, midc, 1.0, low, 1.0);
+    if !wall {
+        gradient(win, ox, oy, w, hz * 0.7 + 1.0, top, 1.0, midc, 1.0);
+        gradient(win, ox, oy + hz * 0.7, w, hz * 0.3 + 1.0, midc, 1.0, low, 1.0);
+    }
 
+    if noir {
+        crate::modes::noir_sky(win, &crate::life::Frame { w, h, ox, oy, hz, u, t: tf, sky: [wn, wt, wd] });
+    }
     // ---- stars, fewer behind the clouds
-    let starry = wn * (1.0 - cloud * 0.85);
+    let starry = if wall { 0.0 } else { wn * (1.0 - cloud * 0.85) };
     if starry > 0.03 {
         for s in &world.stars {
             let tw = 0.72 + 0.28 * (tf * (0.5 + s.2) + s.3).sin();
@@ -396,7 +504,7 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
             }
         }
     }
-    for pl in list(st, &["night", "planets"]) {
+    for pl in list(st, &["night", "planets"]).iter().filter(|_| !wall) {
         let (Some(az), Some(el)) = (pl.get("az").and_then(Value::as_f64), pl.get("el").and_then(Value::as_f64)) else { continue };
         let Some(p) = sky_xy(az as f32, el as f32, w, hz) else { continue };
         let name = pl.get("n").and_then(Value::as_str).unwrap_or("");
@@ -413,7 +521,8 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
     }
 
     // ---- the Moon and the Sun, where they really are
-    if let (Some(az), Some(el)) = (num(st, &["night", "moon", "az"]), num(st, &["night", "moon", "el"])) {
+    let sky_on = !wall;
+    if let (true, Some(az), Some(el)) = (sky_on, num(st, &["night", "moon", "az"]), num(st, &["night", "moon", "el"])) {
         if let Some((x, y)) = sky_xy(az as f32, el as f32, w, hz) {
             let lit = num(st, &["night", "moon", "lit"]).unwrap_or(1.0) as f32;
             let waxing = get(st, &["night", "moon", "waxing"]).as_bool().unwrap_or(true);
@@ -429,7 +538,7 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
             }
         }
     }
-    if let (Some(az), Some(el)) = (num(st, &["night", "sun", "az"]), num(st, &["night", "sun", "el"])) {
+    if let (true, Some(az), Some(el)) = (sky_on && get(st, &["ui", "sun"]).as_bool().unwrap_or(true), num(st, &["night", "sun", "az"]), num(st, &["night", "sun", "el"])) {
         if el > -4.0 {
             if let Some((x, y)) = sky_xy(az as f32, el as f32, w, hz) {
                 let low_sun = 1.0 - smooth(0.0, 25.0, el as f32);
@@ -442,7 +551,11 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
     }
 
     let frame = crate::life::Frame { w, h, ox, oy, hz, u, t: tf, sky: [wn, wt, wd] };
-    crate::life::aurora(win, st, pal, &frame);
+    world.last = Some(frame);
+    if sky_on {
+        crate::extra::sky(win, st, pal, &frame, &mut world.more, t, &mut world.labels);
+        crate::life::aurora(win, st, pal, &frame);
+    }
     // ---- your clouds, moving with your wind: slowly when there is almost none, but never standing still
     let toward = (wind_dir + 180.0).to_radians(); // the wind comes from windDir; east is on the left
     let mut vx = -toward.sin() * (wind / 60.0);
@@ -450,7 +563,7 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
     if vx.abs() < floor {
         vx = if vx < 0.0 { -floor } else { floor };
     }
-    let shown = ((cloud * 12.0).round() as usize).min(world.clouds.len());
+    let shown = if wall { 0 } else { ((cloud * 12.0).round() as usize).min(world.clouds.len()) };
     let dark_c = mix(mix(pal.bg, pal.dim, 0.5), top, 0.35);
     let light_c = mix(dark_c, pal.fg, 0.10 + 0.25 * wd);
     for c in world.clouds.iter_mut().take(shown) {
@@ -475,7 +588,7 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
     // ---- the far city: three rows, paler with the distance; windows come on as the Sun goes down
     let lit = 0.07 + 0.50 * wn + 0.28 * wt;
     let warm = mix(pal.warn, pal.fg, 0.35);
-    for b in &world.city {
+    for b in world.city.iter().filter(|_| !noir && !wall && !mars) {
         let depth = b.layer as f32 / 2.0; // 0 far, 1 near
         let body = mix(mix(pal.bg, low, 0.70 - depth * 0.30), pal.fg, 0.02 + depth * 0.02);
         let (bx, bw, bh) = (ox + b.x * w, b.w * w, b.h * h);
@@ -502,27 +615,29 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
         }
     }
 
-    // ---- the ground: pulse.js's floor, and the grid that runs to the horizon
-    gradient(win, ox, oy + hz, w, h - hz, mix(bg, a2, 0.2), 1.0, mix(bg, black, 0.5), 1.0);
-    gradient(win, ox, oy + hz, w, h * 0.06, mix(pal.accent, a2, 0.5), 0.10 + 0.12 * (wn + wt * 0.6), bg, 0.0);
-    let mut grid = PathBuilder::stroke(px((u * 1.0).max(1.0)));
-    for i in 1..=9 {
-        let y = oy + hz + (h - hz) * (i as f32 / 9.0).powf(2.1);
-        grid.move_to(point(px(ox), px(y)));
-        grid.line_to(point(px(ox + w), px(y)));
-    }
-    for i in -12..=12 {
-        let fx = i as f32 / 12.0;
-        grid.move_to(point(px(ox + w / 2.0 + fx * w * 0.12), px(oy + hz)));
-        grid.line_to(point(px(ox + w / 2.0 + fx * w * 1.25), px(oy + h)));
-    }
-    if let Ok(path) = grid.build() {
-        win.paint_path(path, col(a2, 0.20));
+    if !noir && !wall {
+        // ---- the ground: pulse.js's floor, and the grid that runs to the horizon
+        gradient(win, ox, oy + hz, w, h - hz, mix(bg, a2, 0.2), 1.0, mix(bg, black, 0.5), 1.0);
+        gradient(win, ox, oy + hz, w, h * 0.06, mix(pal.accent, a2, 0.5), 0.10 + 0.12 * (wn + wt * 0.6), bg, 0.0);
+        let mut grid = PathBuilder::stroke(px((u * 1.0).max(1.0)));
+        for i in 1..=9 {
+            let y = oy + hz + (h - hz) * (i as f32 / 9.0).powf(2.1);
+            grid.move_to(point(px(ox), px(y)));
+            grid.line_to(point(px(ox + w), px(y)));
+        }
+        for i in -12..=12 {
+            let fx = i as f32 / 12.0;
+            grid.move_to(point(px(ox + w / 2.0 + fx * w * 0.12), px(oy + hz)));
+            grid.line_to(point(px(ox + w / 2.0 + fx * w * 1.25), px(oy + h)));
+        }
+        if let Ok(path) = grid.build() {
+            win.paint_path(path, col(a2, 0.20));
+        }
     }
     // ---- the near city: neon towers either side of the dome, their windows lit as the CPU works
     let cpu = (num(st, &["sys", "cpu"]).unwrap_or(0.0) as f32 / 100.0).clamp(0.0, 1.0);
     let hide = get(st, &["privacy"]).as_bool().unwrap_or(false) || get(st, &["screencast"]).as_bool().unwrap_or(false);
-    let taken = if sphere || bare { 0 } else { crate::life::repos(win, st, pal, &frame, &mut marks, hide) };
+    let taken = if bare || calm || simple { 0 } else { crate::life::repos(win, st, pal, &frame, &mut marks, hide) };
     let mut r = Rand::new(77);
     for i in 0..(if sphere || bare { 0 } else { 16 }) {
         if i < taken {
@@ -572,7 +687,14 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
             gradient(win, dcx - rr, dcy - rr, rr * 2.0, rr, a2, 0.0, a2, 0.10);
         }
         if sphere {
-            led_sphere(win, dcx, dcy, rr, st, pal, tf, u);
+            let eyes = get(st, &["ui", "eyes"]).as_bool().unwrap_or(true);
+            let gaze = match world.pointer {
+                Some((px0, py0, at)) if eyes && t - at < 15.0 => (((px0 - (dcx - ox)) / (h * 0.45)).clamp(-1.0, 1.0), ((py0 - (dcy - oy)) / (h * 0.45)).clamp(-1.0, 1.0)),
+                _ => (0.0, 0.0),
+            };
+            let watching = matches!(world.pointer, Some((_, _, at)) if eyes && t - at < 6.0);
+            world.prog = sphere_prog(st, t, watching, t - world.alert_at < 8.0);
+            led_sphere(win, dcx, dcy, rr, st, pal, tf, u, gaze, world.prog, &world.audio);
         } else {
             let mut dome = PathBuilder::stroke(px((u * 1.4).max(1.0)));
             for m in 0..=8 {
@@ -607,7 +729,7 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
     }
     // ---- your AI agents: a drone each over the dome, its light in the colour of what it is doing
     let agents = list(st, &["agents"]);
-    let n_ag = if bare { 0 } else { agents.len().min(6) };
+    let n_ag = if bare || simple { 0 } else { agents.len().min(6) };
     for (i, a) in agents.iter().take(n_ag).enumerate() {
         let state = a.get("state").and_then(Value::as_str).unwrap_or("");
         let c = match state { "working" => pal.accent, "waiting" => pal.warn, "done" => pal.ok, "failed" => pal.crit, _ => pal.dim };
@@ -633,16 +755,31 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
         }
     }
 
-    if !sphere && !bare {
+    if !bare && !calm && !simple {
         crate::life::paint(win, st, pal, &frame, &mut marks);
+    }
+    if !bare && !simple {
+        crate::extra::ground(win, st, pal, &frame, &mut world.more, t, &mut world.labels, kind);
+    }
+    if !bare {
+        world.centre = Some((dcx - ox, dcy - oy, rr));
+    }
+    if orbit {
+        crate::modes::orbit(win, st, pal, &frame, &mut world.rings, dt, face_mood(st));
+    }
+    if hacker {
+        crate::modes::radar(win, st, pal, &frame, &mut marks, hide);
+    }
+    if noir {
+        crate::modes::noir_city(win, st, pal, &frame, &mut marks);
     }
     crate::life::balloon(win, st, pal, &frame, &mut marks);
     crate::life::banner(win, st, pal, &frame, &mut marks);
-    // the line of the horizon: the machine's pulse, livelier with the CPU
+    // the line of the horizon: the machine's pulse, livelier with the CPU (noir has its street instead)
     let _ = cpu;
     let cpu = (num(st, &["sys", "cpu"]).unwrap_or(0.0) as f32 / 100.0).clamp(0.0, 1.0);
     let mut wave = PathBuilder::stroke(px((u * 2.0).max(1.5)));
-    for i in 0..=160 {
+    for i in 0..=(if wall || mars { 0 } else { 160 }) {
         let fx = i as f32 / 160.0;
         let near = (-((fx - 0.5) * 3.2).powi(2)).exp();
         let y = oy + hz + (fx * 38.0 - tf * (1.0 + cpu * 3.0)).sin() * h * 0.006 * (0.3 + cpu) * (1.0 - near * 0.8);
@@ -855,7 +992,7 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
     }
 
     // ---- the planes over you: where they really are, their lights, a short trail
-    for p in list(st, &["sky"]).iter().take(6) {
+    for p in list(st, &["sky"]).iter().take(if simple { 0 } else { 6 }) {
         let (Some(az), Some(el)) = (p.get("az").and_then(Value::as_f64), p.get("el").and_then(Value::as_f64)) else { continue };
         let Some((x, y)) = sky_xy(az as f32, el as f32, w, hz) else { continue };
         let track = p.get("track").and_then(Value::as_f64).unwrap_or(90.0) as f32;
@@ -910,6 +1047,39 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
             marks.push(PlaneMark { c: pal.accent, x: tx, y: (y - s * 1.2).max(h * 0.02), title, line: format!("{route}{} ft · {} kt", (ft as i64 / 100) * 100, kt as i64) });
         }
     }
+    if mars || monolith {
+        // a scene in code: its own world over Pulse's sky, reading what the hub gives a scene
+        let hub_t = num(st, &["t"]).unwrap_or(0.0);
+        if world.view.as_ref().map(|v| v.0 != hub_t).unwrap_or(true) {
+            let sv = crate::worlds::view(st, world.tz);
+            for (k, words) in crate::worlds::update(kind, &mut world.code, &sv) {
+                if k == "chime" {
+                    world.sounds.push("chime");
+                }
+                world.fx(&k, &words, false, t);
+            }
+            world.view = Some((hub_t, sv));
+        }
+        let view = world.view.take();
+        if let Some((_, sv)) = &view {
+            if mars {
+                crate::worlds::mars(win, sv, &frame, &mut world.code, t, &mut world.labels, &mut world.hits);
+            } else {
+                crate::worlds::monolith(win, sv, pal, &frame, &mut world.code, t, &mut world.labels, &mut world.hits);
+            }
+        }
+        world.view = view;
+    }
+    crate::extra::over(win, st, pal, &frame, &mut world.more, t, &mut world.labels);
+    for ask in std::mem::take(&mut world.more.asks) {
+        match ask {
+            "shooting" => world.fx("shooting", "", false, t),
+            "thunder" => world.sounds.push("thunder"),
+            "burst" => world.fx("fireworks", "", true, t),
+            _ => {}
+        }
+    }
+    world.bursts.retain(|b| t - b.0 < 2.6);
     if get(st, &["away"]).as_bool().unwrap_or(false) {
         rect(win, ox, oy, w, h, pal.bg, 0.45); // you are away: the city sleeps
     }

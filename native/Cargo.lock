@@ -4502,12 +4502,13 @@ dependencies = [
 
 [[package]]
 name = "pulse-native"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
  "gpui-ce",
  "gpui_ce_platform",
+ "image",
  "serde",
  "serde_json",
  "toml 0.8.23",

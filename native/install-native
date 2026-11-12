@@ -1,0 +1,41 @@
+#!/bin/bash
+# Omarchy Pulse, native renderer: let pulse-native draw the live wallpaper instead of the web page.
+#   native/install-native            build it (if needed), install it, switch the wallpaper to it
+#   native/install-native --remove   go back to the web wallpaper (nothing else is touched)
+# Pulse itself must be installed first (extras/install-live). This adds two files next to it and one systemd
+# drop-in; it changes none of Pulse's own files, and your pulse.toml stays as it is.
+# (c) 2026 Marco Porro (x.com/MarcoPorro), MIT.
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+share="$HOME/.local/share/omarchy-pulse"
+dropin="$HOME/.config/systemd/user/omarchy-pulse.service.d"
+unit="$HOME/.config/systemd/user/omarchy-pulse.service"
+
+if [[ ${1:-} == --remove ]]; then
+  rm -f "$dropin/native.conf" "$share/pulse-native" "$share/pulse-native-live"
+  rmdir "$dropin" 2>/dev/null || true
+  systemctl --user daemon-reload
+  systemctl --user try-restart omarchy-pulse.service 2>/dev/null || true
+  echo "Done. The web wallpaper draws Pulse again."
+  exit 0
+fi
+[[ -z ${1:-} ]] || { echo "usage: install-native [--remove]"; exit 1; }
+[[ -x $share/omarchy-pulse && -f $unit ]] || { echo "Pulse is not installed yet: run extras/install-live first."; exit 1; }
+
+if [[ ! -x $here/target/release/pulse-native ]]; then
+  command -v cargo >/dev/null || { echo "Rust is missing: sudo pacman -S --needed rust"; exit 1; }
+  (cd "$here" && cargo build --release)
+fi
+install -m 755 "$here/target/release/pulse-native" "$share/pulse-native"
+install -m 755 "$here/pulse-native-live" "$share/pulse-native-live"
+mkdir -p "$dropin"
+cat > "$dropin/native.conf" <<UNIT
+# Omarchy Pulse: the native renderer draws the wallpaper (native/install-native --remove to undo)
+[Service]
+ExecStart=
+ExecStart=$share/pulse-native-live
+UNIT
+systemctl --user daemon-reload
+systemctl --user restart omarchy-pulse.service 2>/dev/null || true
+echo "Done. pulse-native draws the wallpaper now (journalctl --user -u omarchy-pulse -e to see it start)."
+echo "To go back: native/install-native --remove"

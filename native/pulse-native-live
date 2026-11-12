@@ -1,0 +1,40 @@
+#!/bin/bash
+# Omarchy Pulse, native renderer: what the user unit runs when pulse-native draws the wallpaper instead of the web
+# page. It starts the same hub (omarchy-pulse serve: the engine, every source, the API, no web wallpaper) and then
+# pulse-native; when either stops, the other stops too and the unit starts both again.
+# (c) 2026 Marco Porro (x.com/MarcoPorro), MIT. Installed by native/install-native; --remove there undoes it.
+engine="$HOME/.local/share/omarchy-pulse/omarchy-pulse"
+native="$HOME/.local/share/omarchy-pulse/pulse-native"
+conf="$HOME/.config/omarchy-pulse/live.conf"
+current_theme() {
+  local f="$HOME/.local/state/omarchy/current/theme.name" old="$HOME/.config/omarchy/current/theme"
+  if [[ -s $f ]]; then cat "$f"
+  elif [[ -s $HOME/.config/omarchy/current/theme.name ]]; then cat "$HOME/.config/omarchy/current/theme.name"
+  elif [[ -L $old ]]; then basename "$(readlink -f "$old")"
+  fi
+}
+ALWAYS=0
+[[ -f $conf ]] && . "$conf"
+theme="$(current_theme)"
+# the same rule as pulse-live: the pulse theme, or every theme with ALWAYS=1. Exit 77 = nothing to do.
+{ [[ $theme == pulse || $ALWAYS == 1 ]] && [[ -x $engine && -x $native ]]; } || exit 77
+
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+if [[ -z $WAYLAND_DISPLAY || ! -S $XDG_RUNTIME_DIR/$WAYLAND_DISPLAY ]]; then
+  WAYLAND_DISPLAY="$(command ls "$XDG_RUNTIME_DIR" 2>/dev/null | grep -m1 -E '^wayland-[0-9]+$')"
+fi
+if [[ -z $HYPRLAND_INSTANCE_SIGNATURE || ! -d $XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE ]]; then
+  HYPRLAND_INSTANCE_SIGNATURE="$(command ls -t "$XDG_RUNTIME_DIR/hypr" 2>/dev/null | head -1)"
+fi
+export WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE
+[[ -n $WAYLAND_DISPLAY ]] || { echo "pulse-native-live: no Wayland session yet" >&2; exit 1; }
+
+python3 "$engine" serve &
+hub=$!
+trap 'kill $hub 2>/dev/null' EXIT
+sleep 2   # the hub writes its token and opens its port first
+"$native" "$@" &
+wall=$!
+wait -n "$hub" "$wall"
+kill "$hub" "$wall" 2>/dev/null
+exit 1
