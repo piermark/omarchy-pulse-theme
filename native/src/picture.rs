@@ -63,3 +63,15 @@ pub fn colors(bytes: &[u8]) -> Option<Colors> {
     let fg = [238.0 + (a1[0] - 238.0) * 0.12, 238.0 + (a1[1] - 238.0) * 0.12, 242.0 + (a1[2] - 242.0) * 0.12];
     Some(Colors { bg: to(bg), fg: to(fg), accent: to(a1), accent2: to(a2) })
 }
+
+/// "tint": the picture's shape, filled with one colour (its transparency stays), so logos and icons follow the theme.
+pub fn tint(bytes: &[u8], c: C) -> Option<Arc<gpui::Image>> {
+    let mut img = image::load_from_memory(bytes).ok()?.to_rgba8();
+    let rgb = [(c[0] * 255.0) as u8, (c[1] * 255.0) as u8, (c[2] * 255.0) as u8];
+    for p in img.pixels_mut() {
+        (p[0], p[1], p[2]) = (rgb[0], rgb[1], rgb[2]);
+    }
+    let mut out = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut out, image::ImageFormat::Png).ok()?;
+    Some(Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, out.into_inner())))
+}

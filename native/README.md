@@ -4,9 +4,9 @@ A parallel renderer for Omarchy Pulse. The web page stays the default (and is wh
 paints the same wallpaper natively on the GPU, with no browser underneath. It reads the same hub: the same
 `omarchy-pulse` service, the same token and the same `pulse.toml`.
 
-**Status: 0.7, experimental: the first complete port of Pulse 1.8.** Every part of the web wallpaper has its
-counterpart here; the list at the end says what is still simpler or missing. It has been built and looked at on a
-headless test compositor only: on a real Omarchy PC it has yet to be tried.
+**Status: 0.8, experimental: a complete port of Pulse 1.8.** Every part of the web wallpaper has its counterpart
+here; the short list at the end says what is still different. It has been built and looked at on a headless test
+compositor only (clicks and drags with a virtual pointer): on a real Omarchy PC it has yet to be tried.
 
 What it draws, from the same state the web page reads:
 
@@ -40,18 +40,26 @@ What it draws, from the same state the web page reads:
   away or on a still scene; focus, meeting, away, privacy and `motion = "reduced"` as on the web page.
 - **In place of the web wallpaper**: `native/install-native` (and `--remove` to go back).
 
-Simpler than the web page, or still missing:
+- **The look of 1.8** (`polish`, on by default): one light, the real Sun or Moon, that the towers catch and that
+  lies on the floor as a path of glints; a tower for each CPU core with a side, a roof and its reflection, as tall
+  as the core's load, dancing with your music; the far city mirrored on the wet floor; air and mist on the
+  horizon; the beams of a low Sun; rings where the rain lands; your heartbeat running along the line of the horizon.
+- **Pulse Net**: the firewall and what it blocks, the devices' radar, a building for each switch with its ports and
+  the roads between neighbours, a tower for each host with its VMs and their migrations, the Wi-Fi antennas and
+  their people, a truck for each backup, the intruders.
+- **Layout edit** (`omarchy-pulse layout edit`): drag a panel to a column, right click hides it, Save, Cancel, Reset.
+- **pond**, the example scene; in the editor's scenes a picture's tint and the clicks on shapes with their actions;
+  camera panels, and the camera and the car on the sphere.
 
-- the 1.8 polish made with blur (bloom, glass, depth of field): GPUI has no blur; a later step with shaders;
-- the sphere is the LED face and its programmes as words in a frame, not the web page's textured ball; no camera or
-  car programme on it;
-- Pulse Net: the firewall, its events and the devices' radar are here; the full map of the network, Wi-Fi and the
-  backup trucks are not;
-- the layout is read, not edited: drag the panels on the web wallpaper (`omarchy-pulse layout edit`);
-- community scenes written in JavaScript (other than mars and monolith) show the skyline and say so; in design
-  scenes a picture's tint and clicks are missing;
-- the heartbeat is a number beside your name, the line of the horizon does not beat with it;
-- live camera panels refresh with the state (once a second), not as a stream.
+Still different from the web page:
+
+- community scenes written in JavaScript by other people cannot run here (there is no JavaScript engine): they show
+  the skyline and say so. The three that come with Pulse (mars, monolith, pond) are written again in Rust;
+- the sphere is a ball of LEDs with its programmes as words, not the web page's painted texture; the doorbell's
+  picture on the sphere is missing;
+- in layout edit a hidden panel comes back with Reset only;
+- the light of the Sun on the towers and the floor is written from pulse.js but was looked at only under the
+  demo's rain: check it on a clear day.
 
 What the hub does is unchanged, because it is the same hub: sources, alerts, AI, the voice, lights and WLED, the
 phone, the crew, the day's video, Wrapped, the scene editor.

@@ -30,6 +30,7 @@ pub struct Mem {
     met: Option<(f32, f32, f64)>,
     orb: HashMap<String, (f32, f32)>,
     rip: Vec<(f32, f32, f64, f32)>,
+    fish: HashMap<String, (f32, f32)>,
     prev: Option<Value>,
     said: HashMap<String, f64>,
     seen: f64,
@@ -47,7 +48,7 @@ impl Default for Mem {
         let mut hh = 0.5f32;
         let ridge = (0..=64).map(|_| { hh = (hh + (r.next() - 0.5) * 0.22).clamp(0.1, 1.0); hh }).collect();
         let devil = [r.next(), r.next()];
-        Mem { r, stars, far, mesa, rocks, dust, devil, ridge, rov: HashMap::new(), lift: HashMap::new(), flash: HashMap::new(), go: Vec::new(), puffs: Vec::new(), pulses: Vec::new(), met: None, orb: HashMap::new(), rip: Vec::new(), prev: None, said: HashMap::new(), seen: 0.0 }
+        Mem { r, stars, far, mesa, rocks, dust, devil, ridge, rov: HashMap::new(), lift: HashMap::new(), flash: HashMap::new(), go: Vec::new(), puffs: Vec::new(), pulses: Vec::new(), met: None, orb: HashMap::new(), rip: Vec::new(), fish: HashMap::new(), prev: None, said: HashMap::new(), seen: 0.0 }
     }
 }
 
@@ -850,4 +851,103 @@ pub fn monolith(win: &mut Window, sv: &Value, pal: &Pal, f: &Frame, mem: &mut Me
     if !rows.is_empty() { what += &format!(" · {} services", rows.len()) }
     label(labels, cx, hz + h * 0.022, h * 0.0125, fg, 0.55 * quiet, what, false);
     hits.push(Hit { x: cx, y: mid, r: mh * 0.5, text: format!("CPU {cpu:.0}% · {temp:.0}° · RAM {:.0}% · disk {:.0}%", ram * 100.0, disk * 100.0) });
+}
+
+/// pond: the example scene of Pulse 1.5 (docs/SCENES.md). A night pond on the floor of the sky: each AI agent is a
+/// fish, each Git repo a water lily, your CPU stirs the water.
+#[allow(clippy::too_many_arguments)]
+pub fn pond(win: &mut Window, sv: &Value, pal: &Pal, f: &Frame, mem: &mut Mem, t: f64, hits: &mut Vec<Hit>) {
+    let (w, h, hz) = (f.w, f.h, f.hz);
+    let mut g = G { win, ox: f.ox, oy: f.oy };
+    let (bg, fg, ac, a2) = (pal.bg, pal.fg, pal.accent, pal.accent2);
+    let still = get(sv, &["ui", "motion"]).as_str() == Some("reduced");
+    let tt = t as f32;
+    let now = num(sv, &["t"]).unwrap_or(0.0);
+    // the pond: an ellipse on the floor, in perspective
+    let (cx, cy, rx, ry) = (w / 2.0, hz + (h - hz) * 0.52, w * 0.36, (h - hz) * 0.36);
+    g.ell(cx, cy, rx, ry, mix(bg, [0.0, 0.0, 0.0], 0.4), 0.95);
+    for (k, a) in [(0.8, 0.25), (0.55, 0.3), (0.3, 0.35)] {
+        g.ell(cx, cy - ry * 0.4 * (1.0 - k), rx * k, ry * k, mix(bg, ac, 0.32), a);
+    }
+    g.arc(cx, cy, rx, ry, 0.0, TAU, (h / 300.0).max(2.0), mix(bg, a2, 0.5), 0.9);
+    let in_pond = |u: f32, v: f32| (cx + u * rx * 0.86, cy + v * ry * 0.8);
+    // the CPU stirs the water: ripples now and then, more with more load
+    let cpu = num(sv, &["sys", "cpu"]).unwrap_or(0.0) as f32;
+    let rain = num(sv, &["weather", "rain"]).unwrap_or(0.0) > 0.0;
+    if !still && mem.r.next() < 0.02 + cpu / 1500.0 + if rain { 0.4 } else { 0.0 } {
+        let (a, d) = (mem.r.next() * TAU, mem.r.next().sqrt());
+        mem.rip.push((cx + a.cos() * d * rx * 0.9, cy + a.sin() * d * ry * 0.9, t, if rain { 0.4 } else { 0.6 + cpu / 200.0 }));
+    }
+    // a commit or a push drops a stone on its lily
+    let lilies: Vec<&Value> = list(sv, &["git"]).iter().take(8).collect();
+    for e in list(sv, &["events"]) {
+        let et = num(e, &["t"]).unwrap_or(0.0);
+        if et <= mem.seen { continue }
+        mem.seen = et;
+        let k = text(e, &["kind"]);
+        if k == "commit" || k == "push" {
+            let words = text(e, &["text"]);
+            let i = lilies.iter().position(|r| { let n = text(r, &["name"]); !n.is_empty() && words.starts_with(n.as_str()) }).unwrap_or(0) as f32;
+            let p = in_pond((i * 2.4).cos() * 0.8, (i * 2.4).sin() * 0.8);
+            mem.rip.push((p.0, p.1, t, if k == "push" { 1.6 } else { 1.0 }));
+        }
+    }
+    mem.rip.retain(|r| t - r.2 <= 3.0);
+    for r in &mem.rip {
+        let age = (t - r.2) as f32;
+        // a ring stays inside the pond
+        let rr = (age * w * 0.03 * r.3).min(rx * (1.0 - (((r.0 - cx) / rx).powi(2) + ((r.1 - cy) / ry).powi(2)).sqrt()).max(0.0));
+        g.arc(r.0, r.1, rr, rr * ry / rx, 0.0, TAU, (h / 900.0).max(1.0), fg, 0.25 * (1.0 - age / 3.0) * r.3.min(1.0));
+    }
+    // the agents: one fish each, faster while working, golden when done, still and red when failed
+    for (i, ag) in list(sv, &["agents"]).iter().enumerate() {
+        let state = text(ag, &["state"]);
+        let fi = mem.fish.entry(key_of(ag, i)).or_insert((i as f32 * 1.7, 0.3 + (i % 4) as f32 * 0.14));
+        let speed = match state.as_str() { "working" => 0.9, "waiting" => 0.05, "done" => 0.35, "failed" => 0.0, "idle" => 0.15, _ => 0.2 };
+        if !still { fi.0 += speed * 0.02 }
+        let p = in_pond(fi.0.cos() * fi.1 * 1.6, fi.0.sin() * fi.1 * 1.4);
+        let dir = fi.0 + PI / 2.0;
+        let col = match state.as_str() { "working" => ac, "waiting" => pal.warn, "done" => c8(240, 190, 90), "failed" => pal.crit, _ => mix(fg, bg, 0.4) };
+        let l = h * 0.038;
+        let wag = if still || speed < 0.1 { 0.0 } else { (tt * 9.0 + i as f32).sin() * 0.35 };
+        let squash = ry / rx * 1.4;
+        let (sn, cs) = dir.sin_cos();
+        let at = |x: f32, y: f32| (p.0 + x * cs - y * sn, p.1 + (x * sn + y * cs) * squash);
+        let a = if state == "failed" { 0.55 } else { 0.9 };
+        let body: Vec<(f32, f32)> = (0..24).map(|k| { let an = k as f32 / 24.0 * TAU; at(an.cos() * l, an.sin() * l * 0.36) }).collect();
+        g.poly(&body, col, a);
+        g.poly(&[at(-l * 0.85, 0.0), at(-l * 1.45, -l * 0.42 + wag * l), at(-l * 1.45, l * 0.42 + wag * l)], col, a);
+        let eye = at(l * 0.55, -l * 0.12);
+        g.disc(eye.0, eye.1, l * 0.07, bg, 0.9);
+        if state == "waiting" {
+            g.glow(p.0, p.1, l * 3.0, pal.warn, if still { 0.5 } else { 0.35 + 0.35 * (tt * 3.0).sin() }); // waiting for you
+        }
+        let mins = ((now - num(ag, &["since"]).unwrap_or(now)) / 60.0).max(0.0).round() as i64;
+        let name = text(ag, &["name"]);
+        hits.push(Hit { x: p.0, y: p.1, r: l * 1.6, text: format!("{} · {state}{}", if name.is_empty() { "an agent".into() } else { name }, if mins > 0 { format!(" · {mins} min") } else { String::new() }) });
+    }
+    // the repos: water lilies around the edge, bigger with more commits this week, the flower is the CI
+    for (i, r) in lilies.iter().enumerate() {
+        let fi = i as f32;
+        let p = in_pond((fi * 2.4).cos() * 0.8, (fi * 2.4).sin() * 0.8);
+        let week = num(r, &["week"]).unwrap_or(0.0) as f32;
+        let s = h * (0.018 + (week / 30.0).min(1.0) * 0.02);
+        let mut pad: Vec<(f32, f32)> = (0..=24).map(|k| { let an = 0.25 + (TAU - 0.5) * k as f32 / 24.0; (p.0 + an.cos() * s, p.1 + an.sin() * s * 0.45) }).collect();
+        pad.push(p);
+        g.poly(&pad, mix(pal.ok, bg, 0.45), 0.95);
+        let ci = text(r, &["ci"]);
+        let fc = match ci.as_str() { "fail" => Some(pal.crit), "run" => Some(pal.warn), "ok" => Some(c8(245, 230, 240)), _ => None };
+        if let Some(fc) = fc {
+            let open = if ci == "run" && !still { 0.5 + 0.3 * (tt * 2.0).sin() } else { 1.0 };
+            for k in 0..6 {
+                let an = k as f32 / 6.0 * TAU + 0.3;
+                g.arcf(p.0 + an.cos() * s * 0.28 * open, p.1 - s * 0.2 + an.sin() * s * 0.12 * open, s * 0.22, s * 0.1, an, 0.0, TAU, fc, 0.9);
+            }
+        }
+        let name = text(r, &["name"]);
+        hits.push(Hit { x: p.0, y: p.1, r: s * 2.0, text: format!("{} · {week:.0} commits this week{}", if name.is_empty() { "a repo".into() } else { name }, if ci.is_empty() { String::new() } else { format!(" · CI {}", if ci == "ok" { "green" } else { ci.as_str() }) }) });
+    }
+    if get(sv, &["away"]).as_bool().unwrap_or(false) {
+        g.ell(cx, cy, rx, ry, fg, 0.06); // away: the pond sleeps under a light mist
+    }
 }

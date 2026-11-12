@@ -20,6 +20,8 @@ pub struct Mem {
     every: HashMap<String, i64>,
     last: HashMap<String, f64>,
     prev: Option<Value>,
+    /// what a click can find, made new at every frame: x, y, half width, half height, the shape's click text, its id
+    pub hits: Vec<(f32, f32, f32, f32, String, String)>,
 }
 
 /// A line of text of the design, for the element tree to write (centred on x, y).
@@ -41,6 +43,8 @@ pub struct Picture {
     pub w: f32,
     pub h: f32,
     pub a: f32,
+    /// "tint": the picture's shape filled with this colour (logos and icons follow the theme)
+    pub tint: Option<C>,
 }
 
 /// An effect an action asks Pulse for.
@@ -379,7 +383,10 @@ pub fn paint(win: &mut Window, design: &Value, st: &Value, pal: &Pal, mem: &mut 
     let still = st.get("ui").map(|u| s(u, "motion") == "reduced").unwrap_or(false);
     let u1 = h / 1080.0;
     if let Some(bg) = design.get("background").filter(|b| !s(b, "asset").is_empty()) {
-        pics.push(Picture { asset: s(bg, "asset").into(), x: w / 2.0, y: h / 2.0, w, h, a: n(bg, "alpha", 1.0).clamp(0.0, 1.0) });
+        pics.push(Picture { asset: s(bg, "asset").into(), x: w / 2.0, y: h / 2.0, w, h, a: n(bg, "alpha", 1.0).clamp(0.0, 1.0), tint: None });
+    }
+    mem.hits.clear();
+    {
     }
     for sh in arr(design, "shapes") {
         let id = s(sh, "id").to_string();
@@ -519,9 +526,11 @@ pub fn paint(win: &mut Window, design: &Value, st: &Value, pal: &Pal, mem: &mut 
                         rect(win, cx - sw / 2.0 + fx * sw - sz / 2.0, cy - shh / 2.0 + fy * shh - sz / 2.0, sz, sz * if dir == "down" || dir == "up" { 2.2 } else { 1.0 }, c, aa);
                     }
                 }
-                "image" => pics.push(Picture { asset: s(sh, "asset").into(), x: p.x * w, y: p.y * h, w: sw, h: shh, a }),
+                "image" => pics.push(Picture { asset: s(sh, "asset").into(), x: p.x * w, y: p.y * h, w: sw, h: shh, a, tint: if sh.get("tint").and_then(Value::as_bool).unwrap_or(false) { Some(c) } else { None } }),
                 _ => {}
             }
+            let click = s(sh, "click");
+            mem.hits.push((p.x * w, p.y * h, sw.max(h * 0.02) / 2.0, shh.max(h * 0.02) / 2.0, if click.is_empty() { String::new() } else { fill_text(click, st, it) }, id.clone()));
         }
     }
     (words, pics)
@@ -617,7 +626,17 @@ fn happened(prev: Option<&Value>, st: &Value) -> Vec<&'static str> {
 
 /// Called with every new state: runs the design's actions and returns the effects to ask Pulse for.
 pub fn react(design: &Value, st: &Value, mem: &mut Mem, t: f64) -> Vec<Ask> {
-    let ev = happened(mem.prev.as_ref(), st);
+    react_to(design, st, mem, t, None)
+}
+
+/// The topmost shape under the pointer: its click text and its id.
+pub fn click(mem: &Mem, x: f32, y: f32) -> Option<(String, String)> {
+    mem.hits.iter().rev().find(|h| (x - h.0).abs() <= h.2 && (y - h.1).abs() <= h.3).map(|h| (h.4.clone(), h.5.clone()))
+}
+
+/// The same with a click on a shape: only the actions that wait for that click fire.
+pub fn react_to(design: &Value, st: &Value, mem: &mut Mem, t: f64, clicked: Option<&str>) -> Vec<Ask> {
+    let ev = if clicked.is_some() { Vec::new() } else { happened(mem.prev.as_ref(), st) };
     let mut out = Vec::new();
     for ac in arr(design, "actions").iter().take(40) {
         if ac.get("off").and_then(Value::as_bool).unwrap_or(false) {
@@ -625,7 +644,9 @@ pub fn react(design: &Value, st: &Value, mem: &mut Mem, t: f64) -> Vec<Ask> {
         }
         let id = s(ac, "id").to_string();
         let w = ac.get("when").unwrap_or(&Value::Null);
-        let fire = if s(w, "type") == "event" {
+        let fire = if let Some(shape_id) = clicked {
+            s(w, "type") == "event" && s(w, "event") == "click" && (s(w, "shape").is_empty() || s(w, "shape") == shape_id)
+        } else if s(w, "type") == "event" {
             if s(w, "event") == "every" {
                 let k = (t / n(w, "secs", 60.0).max(5.0) as f64).floor() as i64;
                 let was = mem.every.insert(id.clone(), k).unwrap_or(0);
@@ -678,6 +699,8 @@ pub fn react(design: &Value, st: &Value, mem: &mut Mem, t: f64) -> Vec<Ask> {
             }
         }
     }
-    mem.prev = Some(st.clone());
+    if clicked.is_none() {
+        mem.prev = Some(st.clone());
+    }
     out
 }

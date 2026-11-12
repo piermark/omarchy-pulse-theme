@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 pub const DEFAULT_PORT: u16 = 47800;
 /// Pulse's own scenes; any other name is a scene of yours (the editor's, the community's, or one in code).
-pub const BUILTIN: [&str; 9] = ["sphere", "skyline", "orbit", "calm", "hacker", "noir", "city", "mars", "monolith"];
+pub const BUILTIN: [&str; 10] = ["sphere", "skyline", "orbit", "calm", "hacker", "noir", "city", "mars", "monolith", "pond"];
 
 /// What the hub said last, and when.
 #[derive(Clone, Default)]
@@ -21,9 +21,11 @@ pub struct Snapshot {
     /// a scene in code (JavaScript): the web page runs it; this renderer says so and shows the skyline
     pub handwritten: Option<String>,
     /// your own wallpaper ([pulse] wallpaper): its version and the picture, read by the hub from your disk
-    pub wall: Option<(String, Vec<u8>)>,
+    pub wall: Option<(String, Arc<Vec<u8>>)>,
     /// the cover of the song that plays ([music] colors): its version and the picture
-    pub cover: Option<(String, Vec<u8>)>,
+    pub cover: Option<(String, Arc<Vec<u8>>)>,
+    /// the frames of your camera panels (type image with a src on the hub): by panel id, the frame's number and the picture
+    pub cams: std::collections::HashMap<String, (String, Arc<Vec<u8>>)>,
 }
 
 pub type Shared = Arc<Mutex<Snapshot>>;
@@ -53,10 +55,15 @@ pub type FxQueue = Arc<Mutex<Live>>;
 /// A POST to the hub from a click (acknowledge an incident, a panel's command): sent from its own thread, so the
 /// wallpaper never waits for it.
 pub fn post(base: &str, path: &str) {
+    post_body(base, path, String::new())
+}
+
+/// The same, with a body (the layout you saved).
+pub fn post_body(base: &str, path: &str, body: String) {
     let sep = if path.contains('?') { '&' } else { '?' };
     let url = format!("{base}{path}{sep}token={}", token());
     let _ = std::thread::Builder::new().name("pulse-post".into()).spawn(move || {
-        let _ = ureq::AgentBuilder::new().timeout(Duration::from_secs(4)).build().post(&url).call();
+        let _ = ureq::AgentBuilder::new().timeout(Duration::from_secs(4)).build().post(&url).send_string(&body);
     });
 }
 
@@ -106,9 +113,12 @@ pub fn start(base: String, token: String) -> Shared {
             let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(4)).build();
             let url = format!("{base}/api/state?token={token}");
             let (base, token) = (base.clone(), token.clone());
+            // everything is fetched into this copy first, so the wallpaper never waits for the network
+            let mut cur = Snapshot::default();
             loop {
                 let got = agent.get(&url).call().map_err(|e| e.to_string()).and_then(|r| r.into_string().map_err(|e| e.to_string())).and_then(|b| serde_json::from_str::<Value>(&b).map_err(|e| e.to_string()));
-                if let Ok(mut s) = out.lock() {
+                {
+                    let s = &mut cur;
                     match got {
                         Ok(v) => {
                             // a scene that is not one of Pulse's own: ask the hub for its design, once
@@ -132,16 +142,36 @@ pub fn start(base: String, token: String) -> Shared {
                                     *slot = None;
                                 } else if slot.as_ref().map(|x| x.0 != key).unwrap_or(true) {
                                     if let Some(b) = bytes_of(&agent, &format!("{base}/api/{path}?token={token}&v={key}")) {
-                                        *slot = Some((key, b));
+                                        *slot = Some((key, Arc::new(b)));
                                     }
                                 }
                             }
+                            // camera panels: a new frame is fetched when its number changes (never while sharing the screen)
+                            let private = get(&v, &["privacy"]).as_bool().unwrap_or(false) || get(&v, &["screencast"]).as_bool().unwrap_or(false);
+                            let mut seen = Vec::new();
+                            for wd in list(&v, &["widgets"]).iter().filter(|wd| text(wd, &["type"]) == "image").take(6) {
+                                let (id, src, frame) = (text(wd, &["id"]), text(wd, &["data", "src"]), get(wd, &["data", "frame"]).to_string());
+                                if private || !src.starts_with('/') || get(wd, &["data", "frame"]).is_null() {
+                                    continue;
+                                }
+                                seen.push(id.clone());
+                                if s.cams.get(&id).map(|c| c.0 != frame).unwrap_or(true) {
+                                    let sep = if src.contains('?') { '&' } else { '?' };
+                                    if let Some(b) = bytes_of(&agent, &format!("{base}{src}{sep}token={token}&f={}", frame.trim_matches('"'))) {
+                                        s.cams.insert(id, (frame, Arc::new(b)));
+                                    }
+                                }
+                            }
+                            s.cams.retain(|k, _| seen.contains(k));
                             s.state = v;
                             s.at = Some(Instant::now());
                             s.error = None;
                         }
                         Err(e) => s.error = Some(e.chars().take(120).collect()),
                     }
+                }
+                if let Ok(mut s) = out.lock() {
+                    *s = cur.clone();
                 }
                 std::thread::sleep(Duration::from_secs(1));
             }

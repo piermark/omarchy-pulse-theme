@@ -31,6 +31,8 @@ pub struct Mem {
     pollen: Vec<[f32; 4]>,
     infra: HashMap<String, (f64, f64, Vec<(f32, f32)>)>,
     lift: f32,
+    wifi: HashMap<String, (f32, f32)>,
+    truck: HashMap<String, f32>,
     ny_fx: f64,
     flare: f64,
     pub build: f64,
@@ -46,7 +48,7 @@ pub struct Mem {
 
 impl Default for Mem {
     fn default() -> Self {
-        Mem { r: Rand::new(4711), bolts: Vec::new(), next_bolt: 0.0, last_meteor: 0.0, flakes: Vec::new(), quakes: Vec::new(), tsunamis: Vec::new(), gusts: Vec::new(), pollen: Vec::new(), infra: HashMap::new(), lift: 0.0, ny_fx: 0.0, flare: -1e9, build: -1e9, ring: -1e9, ringing: false, asks: Vec::new(), flash: 0.0, storms: Vec::new() }
+        Mem { r: Rand::new(4711), bolts: Vec::new(), next_bolt: 0.0, last_meteor: 0.0, flakes: Vec::new(), quakes: Vec::new(), tsunamis: Vec::new(), gusts: Vec::new(), pollen: Vec::new(), infra: HashMap::new(), lift: 0.0, wifi: HashMap::new(), truck: HashMap::new(), ny_fx: 0.0, flare: -1e9, build: -1e9, ring: -1e9, ringing: false, asks: Vec::new(), flash: 0.0, storms: Vec::new() }
     }
 }
 
@@ -663,4 +665,202 @@ pub fn over(win: &mut Window, st: &Value, pal: &Pal, f: &Frame, mem: &mut Mem, t
         }
     }
     let _ = PI;
+}
+
+/// Pulse Net, the rest of your network as part of the city (read-only): a building for each switch with a window
+/// for each port and roads between neighbours, a tower for each host with a floor for each VM, an antenna for each
+/// access point with its people, a truck for each backup job, robots with red eyes for intruders.
+pub fn net(win: &mut Window, st: &Value, pal: &Pal, f: &Frame, mem: &mut Mem, t: f64, labels: &mut Vec<Label>) {
+    let pnet = get(st, &["net"]);
+    if !pnet.is_object() {
+        return;
+    }
+    let mut g = G { win, ox: f.ox, oy: f.oy };
+    let (w, h, hz) = (f.w, f.h, f.hz);
+    let floor = h - hz;
+    let still = get(st, &["ui", "motion"]).as_str() == Some("reduced");
+    let tf = t as f32;
+    let hide = private(st);
+    let now = num(st, &["t"]).unwrap_or(0.0);
+    let (bg, fg, ac, a2) = (pal.bg, pal.fg, pal.accent, pal.accent2);
+    let mut pos: HashMap<String, [f32; 4]> = HashMap::new();
+    let row_y = hz + floor * 0.2;
+    let sws = list(pnet, &["switches"]);
+    if !sws.is_empty() {
+        let span = w * 0.25;
+        let bwid = (w * 0.085).min(span / sws.len() as f32 * 0.82);
+        for (i, s) in sws.iter().enumerate() {
+            let ports = list(s, &["ports"]);
+            let (x, cols) = (w * 0.26 + (i as f32 + 0.5) * span / sws.len() as f32, 12usize);
+            let (rows, cw) = (ports.len().div_ceil(cols).max(1), bwid / cols as f32);
+            let bh = rows as f32 * cw * 2.0 + h * 0.016;
+            let top = row_y - bh;
+            let up = get(s, &["up"]).as_bool().unwrap_or(true);
+            g.rect(x - bwid / 2.0, top, bwid, bh, mix(bg, ac, 0.14), 0.95);
+            g.frame(x - bwid / 2.0, top, bwid, bh, (h / 800.0).max(1.0), if up { ac } else { pal.crit }, if up { 0.6 } else if (tf * 2.0).fract() < 0.5 { 1.0 } else { 0.3 });
+            for (k, p) in ports.iter().enumerate() {
+                let (px0, py0) = (x - bwid / 2.0 + (k % cols) as f32 * cw + cw * 0.2, top + h * 0.008 + (k / cols) as f32 * cw * 2.0);
+                let (c, a) = if get(p, &["err"]).as_bool().unwrap_or(false) { (pal.crit, if still || (tf * 3.0).fract() < 0.6 { 1.0 } else { 0.3 }) } else if get(p, &["up"]).as_bool().unwrap_or(false) { (if get(p, &["jam"]).as_bool().unwrap_or(false) { pal.warn } else { ac }, 0.35 + 0.65 * num(p, &["util"]).unwrap_or(0.0) as f32) } else { (bg, 0.9) };
+                g.rect(px0, py0, cw * 0.6, cw * 1.3, c, a);
+            }
+            let name = text(s, &["name"]);
+            if !name.is_empty() && !hide { lab(labels, x, top - h * 0.02, h * 0.011, fg, 0.7, name.clone(), false) }
+            pos.insert(if name.is_empty() { format!("#{i}") } else { name }, [x, top, bwid, row_y]);
+        }
+        for (i, s) in sws.iter().enumerate() {
+            // the roads between neighbours (LLDP/CDP); a busy uplink is a traffic jam
+            let name = text(s, &["name"]);
+            let Some(a) = pos.get(&if name.is_empty() { format!("#{i}") } else { name }).copied() else { continue };
+            for p in list(s, &["ports"]) {
+                let Some(b) = pos.get(&text(p, &["peer"])).copied() else { continue };
+                if b[0] == a[0] { continue }
+                let (y, jam) = (row_y + h * 0.012, get(p, &["jam"]).as_bool().unwrap_or(false));
+                g.line(&[(a[0], y), (b[0], y)], (h / 600.0).max(1.0), if jam { pal.warn } else { ac }, 0.35);
+                let (n, sp) = (if jam { 10 } else { 3 }, if jam { 0.05 } else { 0.4 + num(p, &["util"]).unwrap_or(0.0) as f32 });
+                for k in 0..n {
+                    let q = if still { k as f32 / n as f32 } else { (tf * sp + k as f32 / n as f32).fract() };
+                    g.rect(a[0] + (b[0] - a[0]) * q, y - 1.5, 3.0, 3.0, if jam { pal.warn } else { fg }, 0.85);
+                }
+            }
+        }
+    }
+    // the datacenter: a tower for each host, a floor for each VM; a migration is a lift; maintenance has scaffolding
+    let hosts = list(pnet, &["dc", "hosts"]);
+    if !hosts.is_empty() {
+        let dspan = w * 0.2;
+        let (tw, fh) = ((w * 0.03).min(dspan / hosts.len() as f32 * 0.6), h * 0.007);
+        for (i, ho) in hosts.iter().enumerate() {
+            let vms = list(ho, &["vms"]);
+            let (x, n) = (w * 0.54 + (i as f32 + 0.5) * dspan / hosts.len() as f32, vms.len().min(24));
+            let top = row_y - n as f32 * fh - h * 0.01;
+            g.rect(x - tw / 2.0, top, tw, row_y - top, mix(bg, a2, 0.15), 0.95);
+            for (k, v) in vms.iter().take(n).enumerate() {
+                let up = get(v, &["up"]).as_bool().unwrap_or(false);
+                g.rect(x - tw * 0.4, row_y - (k as f32 + 1.0) * fh - h * 0.004, tw * 0.8, fh * 0.7, if up { a2 } else { mix(bg, fg, 0.15) }, if up { 0.75 } else { 0.6 });
+            }
+            g.frame(x - tw / 2.0, top, tw, row_y - top, (h / 900.0).max(1.0), if get(ho, &["up"]).as_bool().unwrap_or(true) { a2 } else { pal.crit }, 0.7);
+            if get(ho, &["maint"]).as_bool().unwrap_or(false) {
+                for k2 in 0..4 {
+                    let yy = top + (row_y - top) * k2 as f32 / 4.0;
+                    g.line(&[(x - tw * 0.7, yy), (x + tw * 0.7, yy + (row_y - top) / 4.0)], 1.0, pal.warn, 0.6);
+                }
+            }
+            let name = text(ho, &["name"]);
+            if !name.is_empty() && !hide { lab(labels, x, top - h * 0.018, h * 0.01, fg, 0.65, name.clone(), false) }
+            pos.insert(if name.is_empty() { format!("h{i}") } else { name }, [x, top, tw, row_y]);
+        }
+        for m in list(pnet, &["dc", "moves"]) {
+            let (Some(a), Some(b)) = (pos.get(&text(m, &["from"])), pos.get(&text(m, &["to"]))) else { continue };
+            let age = (now - num(m, &["t"]).unwrap_or(0.0)) as f32;
+            if age > 6.0 { continue }
+            let q = (age / 4.0).clamp(0.0, 1.0);
+            g.rect(a[0] + (b[0] - a[0]) * q - tw * 0.4, a[1].min(b[1]) - h * 0.03 * (q * PI).sin(), tw * 0.8, fh, pal.warn, 0.95);
+        }
+    }
+    // Wi-Fi: an antenna for each access point, a person for each client, nearer with a stronger signal
+    let aps = list(pnet, &["wifi", "aps"]);
+    if !aps.is_empty() {
+        let wy = hz + floor * 0.52;
+        let mut ap_x: HashMap<String, f32> = HashMap::new();
+        for (i, a) in aps.iter().enumerate() {
+            let x = w * 0.32 + (i as f32 + 0.5) * w * 0.36 / aps.len() as f32;
+            let name = a.as_str().unwrap_or("").to_string();
+            g.line(&[(x, wy), (x, wy - h * 0.035)], (h / 700.0).max(1.5), ac, 0.8);
+            for r in 0..3 {
+                let rr = (if still { r as f32 / 3.0 } else { (tf * 0.5 + r as f32 / 3.0).fract() }) * h * 0.05;
+                g.arc(x, wy - h * 0.035, rr, rr, PI * 1.15, PI * 1.85, 1.0, ac, 0.4 * (1.0 - rr / (h * 0.05)));
+            }
+            if !name.is_empty() && !hide { lab(labels, x, wy + h * 0.006, h * 0.01, fg, 0.6, name.clone(), false) }
+            ap_x.insert(name, x);
+        }
+        for c in list(pnet, &["wifi", "clients"]) {
+            let Some(ax) = ap_x.get(&text(c, &["ap"])) else { continue };
+            let id = text(c, &["id"]);
+            let hsh = u32::from_str_radix(id.get(0..6).unwrap_or("0"), 16).unwrap_or(0);
+            let (ang, sig) = (((hsh % 360) as f32).to_radians(), num(c, &["signal"]).unwrap_or(-60.0) as f32);
+            let d = w * (0.012 + 0.05 * ((-sig - 35.0) / 55.0).clamp(0.0, 1.0));
+            let (tx, ty) = (ax + ang.cos() * d, wy - h * 0.005 + ang.sin() * d * 0.25);
+            let p = mem.wifi.entry(id).or_insert((tx, ty));
+            let k = if still { 1.0 } else { 0.03 }; // roaming: it walks to its new antenna
+            p.0 += (tx - p.0) * k;
+            p.1 += (ty - p.1) * k;
+            g.rect(p.0 - 1.0, p.1 - h * 0.012, 2.0, h * 0.01, fg, 0.75);
+            g.disc(p.0, p.1 - h * 0.015, h * 0.003, fg, 0.75);
+        }
+    }
+    // backups: each job is a truck. Running: it drives from the city to the vault. Done: it drives back home and parks
+    // with a green light. Failed or late: it stops halfway, hazard lights and smoke, until the next good run.
+    let bks: Vec<&Value> = list(pnet, &["backups"]).iter().take(4).collect();
+    if !bks.is_empty() {
+        let by = hz + floor * 0.6;
+        let (b0, b1) = band(f);
+        let (x0, x1) = (b0 + (b1 - b0) * 0.12, b1 - (b1 - b0) * 0.12);
+        g.rect(x0 - h * 0.05, by + h * 0.004, x1 - x0 + h * 0.1, h * 0.01 + bks.len() as f32 * h * 0.022, mix(bg, fg, 0.12), 0.9); // the road
+        for (k, (dx0, name)) in [(x0, "BACKUP"), (x1, "VAULT")].into_iter().enumerate() {
+            let (dw, dh) = (h * 0.05, h * 0.035);
+            let dx = dx0 + if k == 1 { h * 0.012 } else { -h * 0.062 };
+            let c = if k == 1 { a2 } else { ac };
+            g.rect(dx, by - dh, dw, dh, mix(bg, fg, 0.2), 1.0);
+            g.frame(dx, by - dh, dw, dh, 1.0, c, 0.8);
+            if !hide { lab(labels, dx + dw / 2.0, by - dh - h * 0.016, h * 0.009, c, 0.9, name.into(), true) }
+        }
+        for (i, b) in bks.iter().enumerate() {
+            let (lane, l2) = (by + h * 0.016 + i as f32 * h * 0.022, h * 0.05);
+            let (state, name) = (text(b, &["state"]), text(b, &["name"]));
+            let ago = num(b, &["t"]).map(|bt| (now - bt) as f32).unwrap_or(1e9);
+            let (mut x, mut dir) = (x0, 1.0f32);
+            let bad = state == "failed" || state == "late";
+            if state == "running" {
+                let tk = mem.truck.entry(name.clone()).or_insert(0.0);
+                if !still { *tk += 0.0012 }
+                if *tk > 1.0 { *tk = 0.0 }
+                x = x0 + (x1 - x0) * if still { 0.5 } else { *tk };
+            } else if state == "ok" {
+                let back = (ago / 900.0).min(1.0);
+                x = x1 + (x0 - x1) * if still { 1.0 } else { back };
+                dir = if back < 1.0 { -1.0 } else { 1.0 };
+                mem.truck.remove(&name);
+            } else if bad {
+                x = x0 + (x1 - x0) * 0.5;
+            }
+            let c = if bad { pal.crit } else if state == "ok" { pal.ok } else { ac };
+            let at = |k: f32| x + dir * l2 * k;
+            let box_x = at(-0.5).min(at(0.18));
+            g.rect(box_x, lane - l2 * 0.42, l2 * 0.68, l2 * 0.36, mix(bg, fg, 0.55), 1.0); // the box
+            g.rect(at(-0.46).min(at(0.14)), lane - l2 * 0.3, l2 * 0.6, l2 * 0.08, c, 0.95); // its stripe: the state
+            g.rect(at(0.2).min(at(0.46)), lane - l2 * 0.3, l2 * 0.26, l2 * 0.24, mix(bg, fg, 0.4), 1.0); // the cab
+            g.rect(at(0.32).min(at(0.43)), lane - l2 * 0.27, l2 * 0.11, l2 * 0.1, ac, 0.5); // its window
+            for k in [-0.35, 0.05, 0.34] { g.disc(at(k), lane - l2 * 0.05, l2 * 0.07, bg, 1.0) }
+            if state == "running" || dir < 0.0 { g.rect(at(0.45).min(at(0.48)), lane - l2 * 0.12, l2 * 0.03, l2 * 0.04, pal.warn, 0.9) } // headlights
+            if bad {
+                let on = still || (tf * 2.0).fract() < 0.5;
+                g.rect(x - l2 * 0.52, lane - l2 * 0.16, l2 * 0.04, l2 * 0.04, pal.warn, if on { 1.0 } else { 0.15 });
+                g.rect(x + l2 * 0.44, lane - l2 * 0.16, l2 * 0.04, l2 * 0.04, pal.warn, if on { 1.0 } else { 0.15 });
+                if !still {
+                    for sm in 0..5 {
+                        let q = (tf * 0.25 + sm as f32 / 5.0).fract();
+                        g.disc(x + l2 * 0.3 + (q * 6.0 + sm as f32).sin() * l2 * 0.12 + q * l2 * 0.09, lane - l2 * 0.35 - q * h * 0.05, l2 * (0.08 + q * 0.18), mix(fg, bg, 0.4), 0.28 * (1.0 - q));
+                    }
+                }
+            }
+            if !hide && !name.is_empty() {
+                labels.push(Label { x: x + l2 * 0.55 + h * 0.06, y: lane - l2 * 0.34, size: h * 0.01, c, a: 0.85, text: format!("{name} · {state}"), bold: false });
+            }
+        }
+    }
+    // intruders: robots with red eyes walking to the server they hit, bigger when more serious
+    for (i, a) in list(pnet, &["intruders"]).iter().enumerate() {
+        let tgt = pos.get(&text(a, &["target"])).copied().unwrap_or([w * 0.5, 0.0, 0.0, hz + floor * 0.2]);
+        let q = ((now - num(a, &["t"]).unwrap_or(now)).max(0.0) as f32 / 40.0).min(1.0);
+        let sx = if i % 2 == 1 { w * 0.24 } else { w * 0.76 };
+        let (x, y, s2) = (sx + (tgt[0] - sx) * if still { 1.0 } else { q }, tgt[3] + h * 0.02, h * if text(a, &["level"]) == "crit" { 0.03 } else { 0.02 });
+        let body = mix(bg, fg, 0.4);
+        g.rect(x - s2 * 0.3, y - s2, s2 * 0.6, s2 * 0.7, body, 0.95);
+        g.rect(x - s2 * 0.22, y - s2 * 1.35, s2 * 0.44, s2 * 0.33, body, 0.95);
+        g.rect(x - s2 * 0.15, y - s2 * 1.25, s2 * 0.1, s2 * 0.08, pal.crit, 1.0);
+        g.rect(x + s2 * 0.05, y - s2 * 1.25, s2 * 0.1, s2 * 0.08, pal.crit, 1.0);
+        let stp = if still { 0.0 } else { (tf * 8.0 + i as f32).sin() * s2 * 0.1 };
+        g.rect(x - s2 * 0.2 + stp, y - s2 * 0.3, s2 * 0.12, s2 * 0.3, body, 0.95);
+        g.rect(x + s2 * 0.08 - stp, y - s2 * 0.3, s2 * 0.12, s2 * 0.3, body, 0.95);
+    }
 }
