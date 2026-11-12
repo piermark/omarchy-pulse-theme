@@ -937,6 +937,27 @@ pub fn weather_word(code: i32) -> &'static str {
     }
 }
 
+/// The size a monitor really has, in logical pixels. GPUI divides the monitor's mode by the whole-number scale that
+/// wl_output sends (2 for a 1.25 scale), so on a fractional scale it reports a smaller screen and the wallpaper would
+/// be a box in the middle; Hyprland knows the real scale, so the size is taken from it (as it is when it cannot be read).
+fn logical_size(reported: Size<gpui::Pixels>) -> Size<gpui::Pixels> {
+    let (w, h) = (f32::from(reported.width), f32::from(reported.height));
+    let Ok(out) = std::process::Command::new("hyprctl").args(["monitors", "-j"]).output() else { return reported };
+    let Ok(monitors) = serde_json::from_slice::<Value>(&out.stdout) else { return reported };
+    for m in monitors.as_array().into_iter().flatten() {
+        let (pw, ph, s) = (m["width"].as_f64().unwrap_or(0.), m["height"].as_f64().unwrap_or(0.), m["scale"].as_f64().unwrap_or(1.));
+        if s <= 0. || pw <= 0. || ph <= 0. {
+            continue;
+        }
+        let whole = s.ceil();
+        if ((pw / whole) as f32 - w).abs() < 1.5 && ((ph / whole) as f32 - h).abs() < 1.5 {
+            let (lw, lh) = ((pw / s).round() as f32, (ph / s).round() as f32);
+            return if m["transform"].as_i64().unwrap_or(0) % 2 == 1 { size(px(lh), px(lw)) } else { size(px(lw), px(lh)) };
+        }
+    }
+    reported
+}
+
 struct Args {
     window: bool,
     url: String,
@@ -982,7 +1003,7 @@ fn main() {
         let secondary_off = std::fs::read_to_string(hub::config_dir().join("pulse.toml")).ok().and_then(|x| x.parse::<toml::Table>().ok()).and_then(|c| c.get("pulse").and_then(|p| p.get("secondary")).and_then(|v| v.as_str().map(|v| v == "off"))).unwrap_or(false);
         let first = cx.primary_display().map(|d| d.id());
         // every monitor with its own size: a layer surface is as big as we ask, and a bigger one is centred and cut
-        let mut screens: Vec<(Option<gpui::DisplayId>, Size<gpui::Pixels>)> = cx.displays().iter().map(|d| (Some(d.id()), d.bounds().size)).collect();
+        let mut screens: Vec<(Option<gpui::DisplayId>, Size<gpui::Pixels>)> = cx.displays().iter().map(|d| (Some(d.id()), logical_size(d.bounds().size))).collect();
         screens.sort_by_key(|d| d.0 != first); // the first monitor first: alerts and sound live there
         if a.window || screens.is_empty() {
             screens = vec![(None, size(px(0.), px(0.)))];

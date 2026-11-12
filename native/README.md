@@ -32,6 +32,9 @@ It draws only when Pulse itself would: with the `pulse` Omarchy theme, or with e
 `~/.config/omarchy-pulse/live.conf` has `ALWAYS=1`. Otherwise the service exits quietly and nothing changes.
 `journalctl --user -u omarchy-pulse -e` shows what it did.
 
+It fills every monitor, also with a fractional scale (1.25, 1.5): the size of each screen is read from
+`hyprctl monitors -j`, because GPUI alone would see a smaller screen and draw a box in the middle.
+
 ### Update
 
 `install-native` builds only when there is no binary yet, so after a pull build again first:
