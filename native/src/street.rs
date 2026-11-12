@@ -170,10 +170,11 @@ impl Street {
             let eye = if bad { pal.crit } else if health == "restart" { pal.warn } else { pal.ok };
             let xf = Xf::at(x, y - bob).scale(p.dir, 1.0);
             let lw = 2.2 * sc;
-            xf.line(win, &[(-2.0 * sc, -12.0 * sc), (-2.0 * sc + sw * 4.0 * sc, 0.0)], lw, line, 0.9); // legs
-            xf.line(win, &[(2.0 * sc, -12.0 * sc), (2.0 * sc - sw * 4.0 * sc, 0.0)], lw, line, 0.9);
-            xf.line(win, &[(-4.5 * sc, -24.0 * sc), (-4.5 * sc - sw * 3.0 * sc, -15.0 * sc)], lw, line, 0.9); // arms
-            xf.line(win, &[(4.5 * sc, -24.0 * sc), (4.5 * sc + sw * 3.0 * sc, -15.0 * sc)], lw, line, 0.9);
+            // the legs and the arms, one shape
+            let limbs = [((-2.0 * sc, -12.0 * sc), (-2.0 * sc + sw * 4.0 * sc, 0.0)), ((2.0 * sc, -12.0 * sc), (2.0 * sc - sw * 4.0 * sc, 0.0)),
+                ((-4.5 * sc, -24.0 * sc), (-4.5 * sc - sw * 3.0 * sc, -15.0 * sc)), ((4.5 * sc, -24.0 * sc), (4.5 * sc + sw * 3.0 * sc, -15.0 * sc))];
+            let limbs: Vec<_> = limbs.iter().map(|(a, b)| (xf.p(a.0, a.1), xf.p(b.0, b.1))).collect();
+            draw::lines(win, &limbs, lw, line, 0.9 * xf.alpha);
             for (rx, ry, rw, rh) in [(-4.5, -26.0, 9.0, 14.0), (-4.0, -34.0, 8.0, 7.0)] {
                 // the body, the head
                 xf.rect(win, rx * sc, ry * sc, rw * sc, rh * sc, body, 0.95);

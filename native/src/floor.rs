@@ -92,13 +92,13 @@ impl Floor {
                 let x = a.0 + o * lw;
                 let x2 = b.0 + o * w * (0.012 + 0.098 * b.2);
                 // its light trail: bright at the car, nothing at the far end (a gradient, in a few steps)
-                let n = 6;
+                let n = 2;
                 for k in 0..n {
                     let (u0, u1) = (k as f32 / n as f32, (k + 1) as f32 / n as f32);
                     let seg = [(ox + x + (x2 - x) * u0, oy + a.1 + (b.1 - a.1) * u0), (ox + x + (x2 - x) * u1, oy + a.1 + (b.1 - a.1) * u1)];
                     draw::line(win, &seg, (sz * 0.9).max(0.6), c, 0.55 * al * (1.0 - (u0 + u1) / 2.0));
                 }
-                radial(win, ox + x, oy + a.1, 0.0, sz * 3.2, 1.0, mix(c, pal.fg, 0.5), &[(0.0, al), (0.3, 0.5 * al), (1.0, 0.0)]);
+                draw::hot(win, ox + x, oy + a.1, sz * 3.6, mix(c, pal.fg, 0.3), al);
             }
             if !share && f > 0.12 && f < 0.92 && (new || !text(d, &["name"]).is_empty()) {
                 let label = if new { format!("new · {}", text(d, &["ip"])) } else { text(d, &["name"]) };

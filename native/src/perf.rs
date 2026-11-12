@@ -52,15 +52,21 @@ pub fn time<R>(name: &'static str, f: impl FnOnce() -> R) -> R {
 }
 
 /// Times the parts of a long function one after the other: `mark("part")` records the time since the last mark.
-pub struct Lap(Option<Instant>);
+pub struct Lap(Option<Instant>, u32);
 impl Lap {
     pub fn new() -> Self {
-        Lap(if on() { Some(Instant::now()) } else { None })
+        Lap(if on() { Some(Instant::now()) } else { None }, 0)
     }
     pub fn mark(&mut self, name: &'static str) {
         if let Some(a) = self.0 {
             record(name, a.elapsed().as_secs_f64() * 1000.0);
             self.0 = Some(Instant::now());
+            // and how many shapes it built (in the PULSE_PERF line, after a slash)
+            let n = crate::draw::PATHS.with(|p| p.get());
+            if std::env::var("PULSE_PATHS").is_ok() {
+                eprintln!("paths {name}: {}", n - self.1);
+            }
+            self.1 = n;
         }
     }
 }

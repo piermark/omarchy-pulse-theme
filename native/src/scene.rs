@@ -75,6 +75,8 @@ pub struct World {
     pub pushed: Vec<String>,
     /// something on screen moves fast (see the end of paint)
     pub lively: bool,
+    /// the dust in the sphere's light
+    pub motes: Vec<[f32; 4]>,
     pub weather: crate::weather::Weather,
     /// the first monitor: the banners and the tips fly there only
     pub primary: bool,
@@ -177,7 +179,7 @@ impl World {
                 x += w + r.next() * 0.004;
             }
         }
-        World { city, last_t: 0.0, rockets: Default::default(), bursts: Vec::new(), say: None, seed: 42, rings: Vec::new(), more: Default::default(), code: Default::default(), labels: Vec::new(), hits: Vec::new(), centre: None, pointer: None, wall: false, has_cam: false, simple: false, last: None, beats: Vec::new(), heights: Vec::new(), audio: Vec::new(), tz: 0, prog: "face", alert_at: -1e9, view: None, sounds: Vec::new(), back: Default::default(), back_img: None, ball: Default::default(), ball_img: None, ball_at: -1e9, gaze: (0.0, 0.0), hm: String::new(), date_short: String::new(), typing: false, woke_at: -1e9, car_at: -1e9, cam: None, door: None, alert_env: 0.0, desk_empty: true, sky: Default::default(), floor: Default::default(), drones: Default::default(), focus_k: 0.0, band: (0.0, 0.0), heavens: Default::default(), street: Default::default(), overhead: Default::default(), pushed: Vec::new(), lively: true, weather: Default::default(), primary: true, git_flash: Default::default(), git_fail: Default::default(), git_pos: Vec::new() }
+        World { city, last_t: 0.0, rockets: Default::default(), bursts: Vec::new(), say: None, seed: 42, rings: Vec::new(), more: Default::default(), code: Default::default(), labels: Vec::new(), hits: Vec::new(), centre: None, pointer: None, wall: false, has_cam: false, simple: false, last: None, beats: Vec::new(), heights: Vec::new(), audio: Vec::new(), tz: 0, prog: "face", alert_at: -1e9, view: None, sounds: Vec::new(), back: Default::default(), back_img: None, ball: Default::default(), ball_img: None, ball_at: -1e9, gaze: (0.0, 0.0), hm: String::new(), date_short: String::new(), typing: false, woke_at: -1e9, car_at: -1e9, cam: None, door: None, alert_env: 0.0, desk_empty: true, sky: Default::default(), floor: Default::default(), drones: Default::default(), focus_k: 0.0, band: (0.0, 0.0), heavens: Default::default(), street: Default::default(), overhead: Default::default(), pushed: Vec::new(), lively: true, motes: Vec::new(), weather: Default::default(), primary: true, git_flash: Default::default(), git_fail: Default::default(), git_pos: Vec::new() }
     }
 }
 
@@ -322,6 +324,10 @@ pub struct PlaneMark {
 /// Paints the world for the time `t` (seconds) and returns the planes' places for their tags.
 pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t: f64, kind: &str, bare: bool, win: &mut Window, cx: &mut gpui::App, font: &gpui::SharedString, ui_boxes: &[[f32; 4]]) -> Vec<PlaneMark> {
     let mut lap = crate::perf::Lap::new();
+    let paths0 = crate::draw::PATHS.with(|n| n.replace(0));
+    if crate::perf::on() {
+        crate::perf::record("paths×1ms", paths0 as f64 / 1000.0); // shapes the last frame built, in thousandths
+    }
     let sphere = kind == "sphere";
     let (orbit, calm, hacker, noir) = (kind == "orbit", kind == "calm", kind == "hacker", kind == "noir");
     let (mars, monolith, pond) = (kind == "mars", kind == "monolith", kind == "pond");
@@ -558,6 +564,11 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
                 radial(win, dcx, dcy, rr * 0.75, rr * 2.3, 1.0, avg, &[(0.0, hk), (0.35, hk * 0.45), (0.7, hk * 0.12), (1.0, 0.0)]);
                 // where it touches the plaza: a pool of its own light
                 radial(win, dcx, hzy, 0.0, rr * 1.1, 0.16, avg, &[(0.0, 0.5), (1.0, 0.0)]);
+                if polish {
+                    let beat_env = world.beats.last().map(|b| (-((t - b) as f32) / 0.16).exp()).unwrap_or(0.0);
+                    let wet = if matches!(crate::ui::wx_kind(code), "rain" | "storm" | "fog") { 1.0 } else { 0.0 };
+                    crate::core::aura(win, dcx, dcy, rr, avg, tf, bass, beat_env, wet, &mut world.motes, dt);
+                }
             }
             // the sphere's picture, and its reflection on the wet floor (the same picture upside down, at 20%)
             let d = world.ball.d;

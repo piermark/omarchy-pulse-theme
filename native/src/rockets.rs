@@ -142,6 +142,7 @@ impl Rockets {
             }
             let hc = xf.p(0.0, by + rw);
             radial(win, hc.0, hc.1, 0.0, rh * 0.8, 1.0, if sep { pal.accent } else { pal.warn }, &[(0.0, 0.45 * fl), (1.0, 0.0)]);
+            draw::hot(win, hc.0, hc.1, rw * 2.2, if sep { pal.accent } else { pal.warn }, 0.9 * fl); // the engine burns white
             body(win, &xf, pal, l.big, rw, rh, if sep { 2 } else { 0 });
             if let Some((sx, sy, sang, st)) = l.sep {
                 // the booster, let go: it coasts up a little, turns, and falls back

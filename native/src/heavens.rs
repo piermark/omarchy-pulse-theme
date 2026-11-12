@@ -91,6 +91,22 @@ impl Heavens {
                         let (x, y) = (ox + p.0, oy + p.1);
                         radial(win, x, y, 0.0, r * 6.0, 1.0, c, &[(0.0, 0.45 * a), (1.0, 0.0)]);
                         draw::arc_fill(win, x, y, r, r, 0.0, 0.0, TAU, mix(pal.fg, c, 0.4), 0.95 * a);
+                        // 0.15: the Sun as a camera sees it: a white-hot core, a starburst, and the flare of the lens
+                        // along the line from the Sun through the middle of the screen
+                        draw::hot(win, x, y, r * 2.2, mix(c, pal.fg, 0.5), 0.9 * a);
+                        let burst = r * (5.0 + 0.6 * (t * 0.7).sin());
+                        for k in 0..4 {
+                            let ang = k as f32 * PI / 4.0 + 0.2;
+                            let (dx, dy) = (ang.cos() * burst, ang.sin() * burst);
+                            for (wd, al) in [(3.0f32, 0.05f32), (1.2, 0.18)] {
+                                draw::line(win, &[(x - dx, y - dy), (x + dx, y + dy)], wd, mix(c, pal.fg, 0.6), al * a);
+                            }
+                        }
+                        let (fx, fy) = (ox + w / 2.0 - x, oy + h * 0.45 - y);
+                        for (k, (pos, size, al)) in [(0.35f32, 0.9f32, 0.07f32), (0.62, 0.45, 0.10), (0.85, 1.6, 0.05), (1.15, 0.6, 0.08), (1.45, 2.4, 0.04)].iter().enumerate() {
+                            let fc = [pal.warn, pal.accent2, c, pal.accent, mix(c, pal.fg, 0.5)][k];
+                            radial(win, x + fx * pos, y + fy * pos, 0.0, r * size, 1.0, fc, &[(0.0, al * a), (0.7, al * a * 0.6), (1.0, 0.0)]);
+                        }
                         let ec = get(st, &["season", "eclipse"]);
                         let obsc = num(ec, &["obsc"]).unwrap_or(0.0) as f32;
                         if text(ec, &["kind"]) == "solar" && obsc > 0.0 {
@@ -432,6 +448,9 @@ impl Overhead {
             // a short streak from where it was (the canvas strokes from two frames back)
             let (sx, sy) = (p.x - (p.x - p.px) * 2.0, p.y - (p.y - p.py) * 2.0);
             draw::line(win, &[(sx, sy), (p.x, p.y)], lw, mix(p.col, pal.fg, if p.life > 0.8 { 0.6 } else { 0.0 }), al);
+            if p.life > 0.55 {
+                crate::scene::disc(win, p.x, p.y, lw * 1.2, mix(p.col, pal.fg, 0.7), al * 0.9); // a hot head on the young sparks
+            }
         }
         self.sparks.retain(|p| p.life > 0.0);
         if self.flash > 0.02 {

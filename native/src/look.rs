@@ -188,8 +188,11 @@ pub fn grid(win: &mut Window, pal: &Pal, f: &Frame, cpu: f32, bass: f32, moving:
         draw::line(win, &[(f.ox, yh), (f.ox + f.w, yh)], lw, pal.accent, 0.05 + 0.45 * p);
     }
     let cx = f.ox + f.w / 2.0;
-    for k in -24i32..=24 {
-        draw::line(win, &[(cx + k as f32 * f.w * 0.012, hz), (cx + k as f32 * f.w * 0.11, f.oy + f.h)], lw, pal.accent, 0.18 - k.abs() as f32 * 0.005);
+    // the lines toward you, in five groups of nearly the same alpha (one shape each)
+    for g in 0..5 {
+        let segs: Vec<_> = (-24i32..=24).filter(|k| (k.abs() as usize * 5 / 25) == g).map(|k| ((cx + k as f32 * f.w * 0.012, hz), (cx + k as f32 * f.w * 0.11, f.oy + f.h))).collect();
+        let kmid = (g as f32 + 0.5) * 5.0;
+        draw::lines(win, &segs, lw, pal.accent, 0.18 - kmid * 0.005);
     }
 }
 
@@ -404,11 +407,8 @@ pub fn git(win: &mut Window, cx_app: &mut gpui::App, font: &gpui::SharedString, 
             let (x0, x1) = (x - bw / 2.0 - bw * 0.12, x + bw / 2.0 + bw * 0.12);
             let lw = (h / 1100.0).max(1.0);
             draw::frame(win, x0, top, x1 - x0, sh, lw, yel, 0.5);
-            for kk in 0..3 {
-                let yy = top + sh * kk as f32 / 3.0;
-                draw::line(win, &[(x0, yy), (x1, yy + sh / 3.0)], lw, yel, 0.5);
-                draw::line(win, &[(x1, yy), (x0, yy + sh / 3.0)], lw, yel, 0.5);
-            }
+            let cross: Vec<_> = (0..3).flat_map(|kk| { let yy = top + sh * kk as f32 / 3.0; [((x0, yy), (x1, yy + sh / 3.0)), ((x1, yy), (x0, yy + sh / 3.0))] }).collect();
+            draw::lines(win, &cross, lw, yel, 0.5);
         }
         let hay = |a: &Value| format!("{} {}", crate::hub::text(a, &["name"]), crate::hub::text(a, &["text"])).to_lowercase();
         let mut work: Vec<&Value> = agents.iter().filter(|a| crate::hub::text(a, &["state"]) == "working" && !name.is_empty() && hay(a).contains(&name.to_lowercase())).collect();
@@ -424,10 +424,12 @@ pub fn git(win: &mut Window, cx_app: &mut gpui::App, font: &gpui::SharedString, 
             draw::line(win, &[(mx + side * bw * 0.3, mtop), (mx - side * jib, mtop)], lw, yel, 0.9);
             let mut y = hz;
             let lw2 = (h / 1400.0).max(1.0);
+            let mut lattice = Vec::new();
             while y > mtop {
-                draw::line(win, &[(mx - h * 0.004, y), (mx + h * 0.004, y - h * 0.007)], lw2, yel, 0.9);
+                lattice.push(((mx - h * 0.004, y), (mx + h * 0.004, y - h * 0.007)));
                 y -= h * 0.014;
             }
+            draw::lines(win, &lattice, lw2, yel, 0.9); // the mast's lattice, one shape
             let sw = if still { 0.0 } else { (t * 1.3 + j as f32).sin() * bw * 0.25 };
             let hx = mx - side * jib * 0.7 + sw;
             let hy = mtop + h * 0.03 + if still { 0.0 } else { (t * 0.7 + j as f32).sin() * h * 0.01 };
@@ -449,7 +451,7 @@ pub fn git(win: &mut Window, cx_app: &mut gpui::App, font: &gpui::SharedString, 
                 // to transparent warn at top - fh; drawn in slices
                 let b = bw / 12.0;
                 let half = |dy: f32| b * (1.0 - 4.0 * (dy / (2.4 * fh)).min(0.25)).max(0.0).sqrt();
-                let slices = 6;
+                let slices = 3;
                 for sl in 0..slices {
                     let (d0, d1) = (0.6 * fh * sl as f32 / slices as f32, 0.6 * fh * (sl + 1) as f32 / slices as f32);
                     let k = 1.0 - (d0 + d1) / 2.0 / fh;

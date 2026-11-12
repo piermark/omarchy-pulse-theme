@@ -6,7 +6,7 @@ use crate::backdrop::{mix as mixi, Rnd};
 use crate::draw;
 use crate::hub::{get, list, num, text};
 use crate::palette::{mix, Pal, C};
-use crate::scene::{radial, rect};
+use crate::scene::rect;
 use gpui::{point, px, size, Bounds, Window};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -261,9 +261,15 @@ impl Sky {
                 }
             }
             let n = q.2.len();
-            for k in 1..n {
-                let kf = k as f32 / n as f32;
-                draw::line(win, &[(ox + q.2[k - 1].0, oy + q.2[k - 1].1), (ox + q.2[k].0, oy + q.2[k].1)], (s2 * 0.35 * kf).max(1.0), pal.fg, 0.28 * kf);
+            // in seven pieces, each one shape (pulse.js strokes 70: as wide and as bright, fading behind)
+            for bin in 0..7 {
+                let (k0, k1) = ((bin * n / 7).max(1), ((bin + 1) * n / 7).min(n));
+                if k1 <= k0 {
+                    continue;
+                }
+                let kf = (k0 + k1) as f32 / 2.0 / n as f32;
+                let segs: Vec<_> = (k0..k1).map(|k| ((ox + q.2[k - 1].0, oy + q.2[k - 1].1), (ox + q.2[k].0, oy + q.2[k].1))).collect();
+                draw::lines(win, &segs, (s2 * 0.35 * kf).max(1.0), pal.fg, 0.28 * kf);
             }
             // where it really moves on the screen wins over its heading (a turn, a plane almost overhead)
             if n > 8 {
@@ -281,10 +287,10 @@ impl Sky {
             // red on its left wing, green on its right, as seen from below
             for (side, c) in [(-1.0f32, pal.crit), (1.0, pal.ok)] {
                 let (lx, ly) = (fx - sx * s2 * 0.6, fy + if side < 0.0 { 1.0 } else { -1.0 } * s2 * 2.0 * sx);
-                radial(win, lx, ly, 0.0, s2 * 0.9, 1.0, c, &[(0.0, 1.0), (1.0, 0.0)]);
+                draw::hot(win, lx, ly, s2 * 1.3, c, 1.0);
             }
             if (t + i as f32 * 0.37).rem_euclid(1.2) < 0.08 {
-                radial(win, fx, fy, 0.0, s2 * 2.0, 1.0, pal.fg, &[(0.0, 0.9), (1.0, 0.0)]); // the white strobe, a short flash
+                draw::hot(win, fx, fy, s2 * 2.6, pal.fg, 0.9); // the white strobe, a short flash
             }
             let flight = text(p, &["flight"]);
             if share || flight.is_empty() {

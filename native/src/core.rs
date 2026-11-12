@@ -232,3 +232,40 @@ pub fn radar(win: &mut Window, cx_app: &mut gpui::App, font: &gpui::SharedString
         }
     }
 }
+
+/// 0.15, for a screen that is a little more a game than a page: the sphere's light through the wet air, beams that
+/// turn slowly behind it and breathe with the beat and the bass, and motes of dust drifting up in its glow.
+#[allow(clippy::too_many_arguments)]
+pub fn aura(win: &mut Window, cx: f32, cy: f32, r: f32, c: C, t: f32, bass: f32, beat: f32, wet: f32, motes: &mut Vec<[f32; 4]>, dt: f32) {
+    let k = 0.045 + 0.05 * bass + 0.03 * beat + 0.03 * wet;
+    for i in 0..12 {
+        let fi = i as f32;
+        let a0 = fi / 12.0 * TAU + t * 0.03 + (t * 0.21 + fi * 1.7).sin() * 0.05;
+        let wd = 0.035 + 0.025 * ((fi * 2.3).sin() * 0.5 + 0.5);
+        let len = r * (2.2 + 0.6 * ((t * 0.4 + fi * 0.9).sin() * 0.5 + 0.5));
+        // each beam fades outward: three lengths over each other
+        let p = |rr: f32, s: f32| (cx + (a0 + s * wd).cos() * rr, cy + (a0 + s * wd).sin() * rr);
+        draw::poly(win, &[p(r * 0.6, -0.4), p(len, -1.0), p(len, 1.0), p(r * 0.6, 0.4)], c, k * 0.6);
+    }
+    // the motes: a few dozen, rising slowly, brightest near the sphere
+    if motes.is_empty() {
+        let mut seed: u32 = 2024;
+        let mut rnd = || { seed = seed.wrapping_mul(1664525).wrapping_add(1013904223); (seed >> 8) as f32 / 16_777_216.0 };
+        for _ in 0..40 {
+            motes.push([rnd() * 2.0 - 1.0, rnd() * 2.0 - 1.0, 0.3 + rnd() * 0.7, rnd() * TAU]);
+        }
+    }
+    for m in motes.iter_mut() {
+        m[1] -= dt * 0.035 * m[2];
+        if m[1] < -1.6 {
+            m[1] = 1.0;
+        }
+        let (x, y) = (cx + (m[0] * 1.9 + (t * 0.3 + m[3]).sin() * 0.05) * r, cy + m[1] * r * 1.4);
+        let d = ((x - cx).powi(2) + (y - cy).powi(2)).sqrt() / (r * 2.2);
+        let a = (1.0 - d).max(0.0) * (0.35 + 0.35 * (t * 1.7 + m[3]).sin().abs());
+        if a > 0.02 {
+            let s = (r * 0.012 * m[2]).max(1.0);
+            crate::scene::disc(win, x, y, s, crate::palette::mix(c, [1.0, 1.0, 1.0], 0.5), a);
+        }
+    }
+}

@@ -82,7 +82,7 @@ impl Drones {
             if (state == "working" || state == "waiting") && d.land < 0.5 {
                 let sw = (t * 1.6 + d.ph).sin() * s * 1.4;
                 let top_a = if state == "waiting" && !blink_on { 0.08 } else { 0.32 };
-                let steps = 8;
+                let steps = 4;
                 for k in 0..steps {
                     let (u0, u1) = (k as f32 / steps as f32, (k + 1) as f32 / steps as f32);
                     let at = |u: f32, side: f32| {
@@ -94,7 +94,7 @@ impl Drones {
                 }
             }
             // its glow, in the colour of its state
-            radial(win, gx, gy, 0.0, s * 2.2, 1.0, col, &[(0.0, if blink_on { 0.45 } else { 0.15 }), (1.0, 0.0)]);
+            radial(win, gx, gy, 0.0, s * 2.6, 1.0, col, &[(0.0, if blink_on { 0.5 } else { 0.15 }), (1.0, 0.0)]);
             // a quadcopter seen slightly from below: four arms, four spinning rotors
             let p = |px0: f32, py0: f32| { let (rx, ry) = rot(px0, py0, tilt); (gx + rx, gy + ry) };
             let arm_c = mix(pal.bg, pal.fg, 0.55);
@@ -112,6 +112,9 @@ impl Drones {
             draw::line(win, &body, (s * if crew { 0.12 } else { 0.07 }).max(1.0), if crew { pal.accent2 } else { col }, 0.95);
             let eye = p(0.0, s * 0.12);
             draw::arc_fill(win, eye.0, eye.1, s * 0.16, s * 0.16, 0.0, 0.0, std::f32::consts::TAU, col, if blink_on { 1.0 } else { 0.3 });
+            if blink_on {
+                draw::hot(win, eye.0, eye.1, s * 0.7, col, 0.8); // its eye burns like a lamp
+            }
             if (t * 1.3 + d.ph).rem_euclid(1.0) < 0.15 {
                 // navigation lights
                 let (l, r) = (p(-s * 1.32, -s * 0.5), p(s * 1.18, -s * 0.5));

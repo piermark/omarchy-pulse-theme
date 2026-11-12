@@ -33,8 +33,32 @@ pub struct Hit {
     pub text: String,
 }
 
+/// A quad for the GPU: no shape to build on the CPU (GPUI draws quads as instances, paths as triangles it made).
+fn quad(win: &mut Window, x: f32, y: f32, w: f32, h: f32, c: C, a: f32) {
+    win.paint_quad(gpui::PaintQuad::new(gpui::Bounds::new(point(px(x), px(y)), gpui::size(px(w.max(0.0)), px(h.max(0.0))))).background(col(c, a)));
+}
+
+/// The rectangle these four points make, when its sides are straight up and across.
+fn axis_rect(pts: &[(f32, f32)]) -> Option<(f32, f32, f32, f32)> {
+    let p = match pts.len() { 4 => pts, 5 if (pts[0].0 - pts[4].0).abs() < 0.01 && (pts[0].1 - pts[4].1).abs() < 0.01 => &pts[..4], _ => return None };
+    let xs = [p[0].0, p[1].0, p[2].0, p[3].0];
+    let ys = [p[0].1, p[1].1, p[2].1, p[3].1];
+    let (x0, x1) = (xs.iter().cloned().fold(f32::MAX, f32::min), xs.iter().cloned().fold(f32::MIN, f32::max));
+    let (y0, y1) = (ys.iter().cloned().fold(f32::MAX, f32::min), ys.iter().cloned().fold(f32::MIN, f32::max));
+    let on = |v: f32, a: f32, b: f32| (v - a).abs() < 0.01 || (v - b).abs() < 0.01;
+    if p.iter().all(|q| on(q.0, x0, x1) && on(q.1, y0, y1)) {
+        Some((x0, y0, x1 - x0, y1 - y0))
+    } else {
+        None
+    }
+}
+
 pub fn poly(win: &mut Window, pts: &[(f32, f32)], c: C, a: f32) {
     if pts.len() < 3 || a <= 0.004 {
+        return;
+    }
+    if let Some((x, y, w, h)) = axis_rect(pts) {
+        quad(win, x, y, w, h, c, a);
         return;
     }
     let mut b = PathBuilder::fill();
@@ -44,6 +68,7 @@ pub fn poly(win: &mut Window, pts: &[(f32, f32)], c: C, a: f32) {
     }
     b.close();
     if let Ok(path) = b.build() {
+        PATHS.with(|n| n.set(n.get() + 1));
         win.paint_path(path, col(c, a));
     }
 }
@@ -52,12 +77,36 @@ pub fn line(win: &mut Window, pts: &[(f32, f32)], lw: f32, c: C, a: f32) {
     if pts.len() < 2 || a <= 0.004 {
         return;
     }
+    if pts.len() == 5 {
+        // the outline of a straight rectangle: four thin quads
+        if let Some((x, y, w, h)) = axis_rect(pts) {
+            let lw = lw.max(1.0);
+            quad(win, x - lw / 2.0, y - lw / 2.0, w + lw, lw, c, a);
+            quad(win, x - lw / 2.0, y + h - lw / 2.0, w + lw, lw, c, a);
+            quad(win, x - lw / 2.0, y + lw / 2.0, lw, (h - lw).max(0.0), c, a);
+            quad(win, x + w - lw / 2.0, y + lw / 2.0, lw, (h - lw).max(0.0), c, a);
+            return;
+        }
+    }
+    if pts.len() == 2 {
+        // a straight line across or up and down is a thin quad
+        let (p, q, w) = (pts[0], pts[1], lw.max(1.0));
+        if (p.1 - q.1).abs() < 0.01 {
+            quad(win, p.0.min(q.0), p.1 - w / 2.0, (p.0 - q.0).abs(), w, c, a);
+            return;
+        }
+        if (p.0 - q.0).abs() < 0.01 {
+            quad(win, p.0 - w / 2.0, p.1.min(q.1), w, (p.1 - q.1).abs(), c, a);
+            return;
+        }
+    }
     let mut b = PathBuilder::stroke(px(lw.max(1.0)));
     b.move_to(point(px(pts[0].0), px(pts[0].1)));
     for p in &pts[1..] {
         b.line_to(point(px(p.0), px(p.1)));
     }
     if let Ok(path) = b.build() {
+        PATHS.with(|n| n.set(n.get() + 1));
         win.paint_path(path, col(c, a));
     }
 }
@@ -77,7 +126,12 @@ fn arc_pts(cx: f32, cy: f32, rx: f32, ry: f32, rot: f32, a0: f32, a1: f32) -> Ve
 /// A filled ellipse, or a slice of one closed by its chord (a0..a1, canvas angles).
 #[allow(clippy::too_many_arguments)]
 pub fn arc_fill(win: &mut Window, cx: f32, cy: f32, rx: f32, ry: f32, rot: f32, a0: f32, a1: f32, c: C, a: f32) {
-    if rx <= 0.0 || ry <= 0.0 {
+    if rx <= 0.0 || ry <= 0.0 || a <= 0.004 {
+        return;
+    }
+    if (a1 - a0).abs() >= TAU - 1e-3 && (rx - ry).abs() < 0.25 {
+        // a whole circle is a round quad
+        win.paint_quad(gpui::PaintQuad::new(gpui::Bounds::new(point(px(cx - rx), px(cy - rx)), gpui::size(px(rx * 2.0), px(rx * 2.0)))).background(col(c, a)).corner_radii(px(rx)));
         return;
     }
     poly(win, &arc_pts(cx, cy, rx, ry, rot, a0, a1), c, a);
@@ -238,11 +292,37 @@ pub fn lines(win: &mut Window, segs: &[((f32, f32), (f32, f32))], lw: f32, c: C,
         return;
     }
     let mut b = PathBuilder::stroke(px(lw.max(1.0)));
+    let mut any = false;
     for (p, q) in segs {
+        if (p.1 - q.1).abs() < 0.01 || (p.0 - q.0).abs() < 0.01 {
+            line(win, &[*p, *q], lw, c, a); // straight across or up: a quad
+            continue;
+        }
+        any = true;
         b.move_to(point(px(p.0), px(p.1)));
         b.line_to(point(px(q.0), px(q.1)));
     }
+    if !any {
+        return;
+    }
     if let Ok(path) = b.build() {
+        PATHS.with(|n| n.set(n.get() + 1));
         win.paint_path(path, col(c, a));
     }
+}
+
+/// A light as the canvas's "lighter" mode draws it on the web page, which GPUI does not have: its colour all round,
+/// and a core that burns toward white, as added light does where it is strongest.
+pub fn hot(win: &mut Window, x: f32, y: f32, r: f32, c: C, a: f32) {
+    if a <= 0.01 || r <= 0.3 {
+        return;
+    }
+    soft(win, x, y, 0.0, r, 1.0, c, &[(0.0, a.min(1.0)), (0.35, 0.45 * a.min(1.0)), (1.0, 0.0)]);
+    let core = crate::palette::mix(c, [1.0, 1.0, 1.0], 0.65);
+    soft(win, x, y, 0.0, r * 0.32, 1.0, core, &[(0.0, (a * 1.1).min(1.0)), (1.0, 0.0)]);
+}
+
+thread_local! {
+    /// shapes built on the CPU this frame (PULSE_PERF counts them)
+    pub static PATHS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
