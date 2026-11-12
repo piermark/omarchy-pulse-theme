@@ -55,9 +55,11 @@ pub fn time<R>(name: &'static str, f: impl FnOnce() -> R) -> R {
 pub struct Lap(Option<Instant>, u32);
 impl Lap {
     pub fn new() -> Self {
+        SECTION.with(|c| c.set(0));
         Lap(if on() { Some(Instant::now()) } else { None }, 0)
     }
     pub fn mark(&mut self, name: &'static str) {
+        SECTION.with(|c| c.set(c.get() + 1));
         if let Some(a) = self.0 {
             record(name, a.elapsed().as_secs_f64() * 1000.0);
             self.0 = Some(Instant::now());
@@ -69,4 +71,10 @@ impl Lap {
             self.1 = n;
         }
     }
+}
+
+thread_local! { pub static SECTION: std::cell::Cell<u32> = const { std::cell::Cell::new(0) }; }
+pub fn skip_paths() -> bool {
+    static N: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+    N.get_or_init(|| std::env::var("PULSE_NOPATH_SEC").ok().and_then(|v| v.parse().ok())).map(|n| SECTION.with(|c| c.get()) == n).unwrap_or(false)
 }

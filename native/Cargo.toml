@@ -1,6 +1,6 @@
 [package]
 name = "pulse-native"
-version = "0.15.0"
+version = "0.16.0"
 edition = "2021"
 license = "MIT"
 description = "Omarchy Pulse, drawn natively in Rust (GPUI): a parallel renderer that reads the same hub as the web page."
@@ -28,3 +28,8 @@ opt-level = 3
 lto = "thin"
 codegen-units = 4
 strip = true
+
+# GPUI's wgpu renderer with one change (vendor/gpui_ce_wgpu/PULSE-NATIVE.md): each batch of paths is drawn in a
+# target as big as the batch instead of the whole screen
+[patch.crates-io]
+gpui_ce_wgpu = { path = "vendor/gpui_ce_wgpu" }

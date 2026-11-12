@@ -14,6 +14,8 @@ pub struct Ui<'a> {
     pub private: bool,
     /// the hub's clock, in Unix seconds
     pub now: f64,
+    /// the hub, for a click on a panel's item (your lights): empty where nothing is clicked
+    pub base: &'a str,
 }
 
 /// pulse.css: `html { font-size: calc(100vh / 68) }`, and `100vw / 92` when the screen is no wider than 4:3.
@@ -394,12 +396,24 @@ impl Ui<'_> {
                 let rows = shown.len().div_ceil(per_row);
                 h += rows as f32 * 2.04 + (rows.saturating_sub(1)) as f32 * if wide { 0.35 } else { 0.5 };
                 let mut grid = div().flex().flex_col().gap(px(if wide { 0.35 } else { 0.5 } * r));
+                // pulse.js finish(): a panel whose items can be clicked (your lights): each tile sends its own click
+                let item_click = (wd.get("itemclick").and_then(Value::as_bool) == Some(true) && !self.base.is_empty()).then(|| (self.base.to_string(), text(wd, &["id"])));
+                let mut idx = 0usize;
                 for chunk in shown.chunks(per_row) {
                     let mut line = div().flex().gap(px(0.5 * r));
                     for it in chunk {
+                        let k = idx;
+                        idx += 1;
                         let lv = text(it, &["level"]);
                         let c = self.level_c(&lv).filter(|_| lv != "info").unwrap_or(p.dim);
-                        line = line.child(div().flex_1().min_w(px(0.0)).flex().items_center().gap(px(0.55 * r)).py(px(0.45 * r)).px(px(0.6 * r))
+                        let mut tile = div().flex_1().min_w(px(0.0)).flex().items_center().gap(px(0.55 * r)).py(px(0.45 * r)).px(px(0.6 * r));
+                        if let Some((base, id)) = item_click.clone() {
+                            tile = tile.on_mouse_down(gpui::MouseButton::Left, move |_, _, cx| {
+                                cx.stop_propagation();
+                                crate::hub::post(&base, &format!("/api/click/{}?item={k}", crate::urlenc(&id)));
+                            });
+                        }
+                        line = line.child(tile
                             .bg(if lv == "crit" { col(p.crit, 0.12) } else { col(p.dim, 0.14) }).border_l_2().border_color(col(c, 1.0))
                             .child(self.dot(&lv, 0.5))
                             .child(div().min_w(px(0.0)).text_size(px(0.95 * r)).line_height(px(1.14 * r)).text_color(self.fg(1.0)).whitespace_nowrap().overflow_hidden().text_ellipsis().child(text(it, &["title"])))

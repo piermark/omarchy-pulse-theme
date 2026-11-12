@@ -12,6 +12,7 @@
 mod backdrop;
 mod cities_data;
 mod city;
+mod gpu;
 mod core;
 mod design;
 mod draw;
@@ -105,6 +106,8 @@ struct Pulse {
     cost: Rc<std::cell::Cell<(f64, f64)>>,
     /// the frames a second the CPU budget allows now
     budget_fps: std::cell::Cell<u64>,
+    /// the CPU sample the frame rate was last set from
+    cpu_seen: std::cell::Cell<u64>,
     /// text panels: the text and when it started to be typed out
     was_away: bool,
     /// the first camera's frame as it came (the sphere shows it in its turn)
@@ -147,18 +150,24 @@ impl Pulse {
                     if at > 0.0 && now - at > 60.0 {
                         (cap, at) = (60, 0.0);
                     }
-                    // and never more than the CPU budget: frames a second × what a frame costs ≤ budget. It moves by
-                    // whole steps and only when the cost has really changed, so the pace stays even
-                    if frame_ms > 0.0 {
-                        let most = ((cpu_budget() * 10.0 / frame_ms) as u64).clamp(8, 60);
-                        let b = this.budget_fps.get();
-                        if b == 0 || most + 2 < b || most > b + 2 {
-                            this.budget_fps.set(most);
+                    // and never more than the CPU budget, measured as `top` measures it: the whole process (drawing,
+                    // GPUI, the GPU driver, the hub reader), every two seconds. Over it, fewer frames at once; well
+                    // under it, one more at a time, so the pace stays even
+                    let (sample, used) = cpu_used();
+                    if sample != this.cpu_seen.get() && used > 0.0 {
+                        this.cpu_seen.set(sample);
+                        let now_fps = match this.budget_fps.get() { 0 => want.min(cap), b => b.min(want.min(cap)) } as f64;
+                        let b = cpu_budget();
+                        if used > b * 1.1 {
+                            this.budget_fps.set(((now_fps * b / used).floor() as u64).clamp(6, 60));
+                        } else if used < b * 0.75 && this.budget_fps.get() != 0 {
+                            let up = this.budget_fps.get() + 1;
+                            this.budget_fps.set(if up >= 60 { 0 } else { up });
                         }
                     }
                     this.cap.set((cap, slow, at));
-                    // a calm scene (nothing falling, no music, no fireworks...) moves slowly: 12 frames a second
-                    let calm_cap = if this.world.borrow().lively { 60 } else { 12 };
+                    // a calm scene (nothing falling, no music, no fireworks...) moves slowly: 10 frames a second
+                    let calm_cap = if this.world.borrow().lively { 60 } else { 10 };
                     match this.budget_fps.get() { 0 => cap.min(calm_cap), b => cap.min(b).min(calm_cap) }
                 }) {
                     Ok(cap) => want = want.min(cap),
@@ -177,7 +186,7 @@ impl Pulse {
         let world = scene::World::new();
         let hud_data: Rc<RefCell<HudData>> = Default::default();
         let hud = cx.new(|_| Hud { data: hud_data.clone() });
-        Pulse { hub, live, forced: !scene.is_empty(), scene, city: Rc::new(RefCell::new(city::World::new())), world: Rc::new(RefCell::new(world)), marks: Rc::new(RefCell::new(Vec::new())), mem: Rc::new(RefCell::new(design::Mem::default())), drawn: Rc::new(RefCell::new((Vec::new(), Vec::new()))), assets: (String::new(), Default::default()), reacted: 0.0, started: Instant::now(), font: font.into(), base, primary, monkey, origin: (0.0, 0.0), sound: sound::Sound::new(), wallpaper: (String::new(), None, None), cover: (String::new(), None), seen_alert: -1, incoming: None, seen_digest: 0, digest: None, ack: None, last_cursor: None, sounded: 0.0, hud_data, hud, hud_key: String::new(), raw_assets: Default::default(), tinted: Default::default(), draft: None, drag: None, boxes: Default::default(), cap: Rc::new(std::cell::Cell::new((60, 0, 0.0))), cost: Default::default(), budget_fps: std::cell::Cell::new(0), was_away: false, cam_bytes: None }
+        Pulse { hub, live, forced: !scene.is_empty(), scene, city: Rc::new(RefCell::new(city::World::new())), world: Rc::new(RefCell::new(world)), marks: Rc::new(RefCell::new(Vec::new())), mem: Rc::new(RefCell::new(design::Mem::default())), drawn: Rc::new(RefCell::new((Vec::new(), Vec::new()))), assets: (String::new(), Default::default()), reacted: 0.0, started: Instant::now(), font: font.into(), base, primary, monkey, origin: (0.0, 0.0), sound: sound::Sound::new(), wallpaper: (String::new(), None, None), cover: (String::new(), None), seen_alert: -1, incoming: None, seen_digest: 0, digest: None, ack: None, last_cursor: None, sounded: 0.0, hud_data, hud, hud_key: String::new(), raw_assets: Default::default(), tinted: Default::default(), draft: None, drag: None, boxes: Default::default(), cap: Rc::new(std::cell::Cell::new((60, 0, 0.0))), cost: Default::default(), budget_fps: std::cell::Cell::new(0), cpu_seen: std::cell::Cell::new(0), was_away: false, cam_bytes: None }
     }
 
     /// A click on the wallpaper: a storm over a failing panel (twice: acknowledge it), or something of the scene,
@@ -253,6 +262,32 @@ fn cpu_budget() -> f64 {
     *CPU_BUDGET.get_or_init(|| std::env::var("PULSE_CPU").ok().and_then(|v| v.parse::<f64>().ok()).map(|v| v.clamp(3.0, 100.0)).unwrap_or(15.0))
 }
 
+/// How much of one core this process used over the last two seconds (percent), and which sample that is. Read
+/// from /proc once every two seconds for every monitor's view together; it also gives freed memory back once a minute.
+fn cpu_used() -> (u64, f64) {
+    static LAST: Mutex<(Option<Instant>, f64, f64, u64, u64)> = Mutex::new((None, 0.0, 0.0, 0, 0));
+    let Ok(mut l) = LAST.lock() else { return (0, 0.0) };
+    let now = Instant::now();
+    match l.0 {
+        Some(at) if now.duration_since(at).as_secs_f64() < 2.0 => {}
+        _ => {
+            if let Some(c) = gpu::cpu_seconds() {
+                if let Some(at) = l.0 {
+                    let wall = now.duration_since(at).as_secs_f64();
+                    l.2 = (c - l.1) / wall * 100.0;
+                    l.3 += 1;
+                    l.4 += 1;
+                    if l.4 % 30 == 0 {
+                        gpu::trim();
+                    }
+                }
+                (l.0, l.1) = (Some(now), c);
+            }
+        }
+    }
+    (l.3, l.2)
+}
+
 fn pace(st: &Value, key: &str, fps: u64, forced_scene: &str, primary: bool) -> (bool, u64) {
     let m = get(st, &["mons", key]);
     let ui = get(st, &["ui"]);
@@ -270,7 +305,7 @@ fn pace(st: &Value, key: &str, fps: u64, forced_scene: &str, primary: bool) -> (
         want = want.min(4); // nothing moves: a few frames a second keep the clock and the data fresh
     }
     if get(st, &["away"]).as_bool().unwrap_or(false) {
-        want = want.min(8); // nobody is looking: save power
+        want = want.min(6); // nobody is looking: save power
     }
     if get(ui, &["wallpaper", "mode"]).as_str() == Some("panels") {
         want = want.min(2); // a still picture: almost no work
@@ -592,11 +627,11 @@ impl Pulse {
 
         // ---- the panels, the clock and the ticker: pulse.css in rem, so the same layout fits every screen
         let rr = ui::rem(w, h);
-        let uix = ui::Ui { r: rr, pal: &pal, private, now: hub_now };
+        let uix = ui::Ui { r: rr, pal: &pal, private, now: hub_now, base: "" };
         let ticker_ws: Vec<&Value> = list(&st, &["widgets"]).iter().filter(|wd| text(wd, &["slot"]) == "ticker").collect();
         {
             let mut d = self.hud_data.borrow_mut();
-            d.inp = Some(HudIn { st: st.clone(), pal, w, h, private, busy, simple, hub_now, t, hm: hm.clone(), sec: sec.clone(), date: date.clone() });
+            d.inp = Some(HudIn { st: st.clone(), pal, w, h, private, busy, simple, hub_now, t, hm: hm.clone(), sec: sec.clone(), date: date.clone(), base: self.base.clone() });
             // a text panel typing, a new state, a new second, another screen: the panels are made again
             let typing = d.typed.values().any(|(full, since)| (((t - since) / 0.04) as usize).saturating_mul(3) < full.chars().count() + 3);
             let key = format!("{:?}|{sec}|{w}x{h}|{private}|{busy}|{simple}|{editing}", snap_at);
@@ -964,10 +999,11 @@ struct Args {
     fps: u64,
     font: String,
     scene: String,
+    gpu: Option<String>,
 }
 
 fn args() -> Args {
-    let mut a = Args { window: false, url: format!("http://127.0.0.1:{}", hub::port()), fps: 0, font: FONT.to_string(), scene: String::new() };
+    let mut a = Args { window: false, url: format!("http://127.0.0.1:{}", hub::port()), fps: 0, font: FONT.to_string(), scene: String::new(), gpu: None };
     let mut it = std::env::args().skip(1);
     while let Some(x) = it.next() {
         match x.as_str() {
@@ -979,6 +1015,7 @@ fn args() -> Args {
                     let _ = CPU_BUDGET.set(v.clamp(3.0, 100.0));
                 }
             }
+            "--gpu" => a.gpu = it.next(),
             "--font" => a.font = it.next().unwrap_or(a.font),
             "--scene" => a.scene = it.next().unwrap_or(a.scene),
             "--version" | "-V" => {
@@ -986,7 +1023,7 @@ fn args() -> Args {
                 std::process::exit(0);
             }
             _ => {
-                println!("pulse-native {}: Omarchy Pulse, drawn natively (Rust + GPUI)\n\n  pulse-native            the wallpaper (a Wayland layer-shell surface behind your windows)\n  pulse-native --window   an ordinary window\n  --url URL   the hub (default: http://127.0.0.1:PORT from PULSE_PORT or pulse.toml)\n  --fps N     frames a second, 5 to 60 (default: the hub's [pulse] fps)\n  --cpu N     at most N% of one core (default 15; PULSE_CPU too): fewer frames a second when they cost more\n  --font NAME the font (default: {FONT})\n  --scene S   the scene: by default the hub's own ([pulse] scene); skyline, sphere, or city (pulse-native's first world)", env!("CARGO_PKG_VERSION"));
+                println!("pulse-native {}: Omarchy Pulse, drawn natively (Rust + GPUI)\n\n  pulse-native            the wallpaper (a Wayland layer-shell surface behind your windows)\n  pulse-native --window   an ordinary window\n  --url URL   the hub (default: http://127.0.0.1:PORT from PULSE_PORT or pulse.toml)\n  --fps N     frames a second, 5 to 60 (default: the hub's [pulse] fps)\n  --cpu N     at most N% of one core (default 15; PULSE_CPU too): fewer frames a second when they cost more\n  --gpu G     vulkan, gl or auto (default; PULSE_GPU too): auto takes OpenGL on Ivy Bridge and Haswell\n  --font NAME the font (default: {FONT})\n  --scene S   the scene: by default the hub's own ([pulse] scene); skyline, sphere, or city (pulse-native's first world)", env!("CARGO_PKG_VERSION"));
                 std::process::exit(if x == "--help" || x == "-h" { 0 } else { 2 });
             }
         }
@@ -996,6 +1033,7 @@ fn args() -> Args {
 
 fn main() {
     let a = args();
+    gpu::choose(a.gpu.as_deref());
     let shared = hub::start(a.url.clone(), hub::token());
     let live = hub::start_live(a.url.clone(), hub::token());
     gpui_platform::application().with_quit_mode(QuitMode::LastWindowClosed).run(move |cx: &mut App| {
@@ -1062,6 +1100,8 @@ pub struct HudIn {
     hm: String,
     sec: String,
     date: String,
+    /// the hub: a click on a panel goes there
+    base: String,
 }
 
 /// The panels' own memory: the text panels typing out, the camera frames, where each panel is (for the planes).
@@ -1071,6 +1111,8 @@ pub struct HudData {
     typed: std::collections::HashMap<String, (String, f64)>,
     cams: std::collections::HashMap<String, (String, Arc<gpui::Image>)>,
     ui_boxes: Rc<RefCell<Vec<[f32; 4]>>>,
+    /// panels clicked a moment ago that clear themselves (the notifications): gone at once, before the hub says so
+    cleared: Rc<RefCell<std::collections::HashMap<String, Instant>>>,
 }
 
 /// The clock and the panels (pulse.css in rem). Built again only when they change: a second has passed, the hub
@@ -1082,7 +1124,8 @@ fn panels_el(d: &mut HudData, layout: &Value, editing: bool, wrap: &mut dyn FnMu
     let (hm, sec, date) = (inp.hm.clone(), inp.sec.clone(), inp.date.clone());
         // ---- the panels, the clock and the ticker: pulse.css in rem, so the same layout fits every screen
     let rr = ui::rem(w, h);
-    let uix = ui::Ui { r: rr, pal: &pal, private, now: hub_now };
+    let base = if editing { String::new() } else { inp.base.clone() };
+    let uix = ui::Ui { r: rr, pal: &pal, private, now: hub_now, base: &base };
     let sec_n: f32 = sec.parse().unwrap_or(0.0);
     let clock_el = div().absolute().top(px((3.6 + 1.2 - 0.75) * rr)).left(px(29.6 * rr)).w(px((w - 59.2 * rr).max(0.0))).flex().justify_center().child(uix.clock(&st, &hm, &sec, sec_n / 59.0, &date));
     let mut mine: Vec<&Value> = list(&st, &["widgets"]).iter().collect();
@@ -1155,6 +1198,7 @@ fn panels_el(d: &mut HudData, layout: &Value, editing: bool, wrap: &mut dyn FnMu
             let o = get(layout, &[id.as_str()]);
             let hidden = get(o, &["hidden"]).as_bool().unwrap_or(false);
             if (hidden && !editing) || (noc_on && noc_hide.contains(&id)) { continue }
+            if !editing && d.cleared.borrow().get(&id).map(|at| at.elapsed().as_secs_f64() < 4.0).unwrap_or(false) { continue }
             if let Some(x) = get(o, &["slot"]).as_str().filter(|x| matches!(*x, "left" | "right" | "center")) { sl = x.to_string() }
             if let Some(x) = num(o, &["order"]) { order = x }
             let p = if editing {
@@ -1162,6 +1206,24 @@ fn panels_el(d: &mut HudData, layout: &Value, editing: bool, wrap: &mut dyn FnMu
             } else {
                 // where it is on the screen, for the planes (pulse.js uiBoxes): a plane never flies hidden under a panel
                 let rec = d.ui_boxes.clone();
+                // pulse.js finish(): a panel with a click (click = "..." in pulse.toml, or the notifications, which a
+                // click clears) sends it to the hub
+                let wd = list(&st, &["widgets"]).iter().find(|x| text(x, &["id"]) == id).cloned();
+                let click = id == "notifications" || wd.as_ref().map(|x| match x.get("click") { Some(Value::Bool(b)) => *b, Some(Value::String(s)) => !s.is_empty(), _ => false }).unwrap_or(false);
+                let clears = id == "notifications" || wd.as_ref().map(|x| x.get("click").and_then(Value::as_str) == Some("clear")).unwrap_or(false);
+                let el = if click {
+                    let (base, pid, cleared) = (inp.base.clone(), id.clone(), d.cleared.clone());
+                    p.el.on_mouse_down(gpui::MouseButton::Left, move |_, win, _| {
+                        hub::post(&base, &format!("/api/click/{}", urlenc(&pid)));
+                        if clears {
+                            cleared.borrow_mut().insert(pid.clone(), Instant::now());
+                        }
+                        win.refresh();
+                    })
+                } else {
+                    p.el
+                };
+                let p = ui::Panel { id: p.id, el, h: p.h };
                 ui::Panel { id: p.id, el: p.el.child(canvas(move |b, _, _| rec.borrow_mut().push([f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.size.width), f32::from(b.size.height)]), |_, _, _, _| ()).absolute().top_0().left_0().size_full()), h: p.h }
             };
             placed.push((sl, order, p));

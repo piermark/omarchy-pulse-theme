@@ -61,16 +61,145 @@ pub fn poly(win: &mut Window, pts: &[(f32, f32)], c: C, a: f32) {
         quad(win, x, y, w, h, c, a);
         return;
     }
+    // a convex shape (most are: a side of a building, a wing, a beam) is a fan of triangles made here, at once;
+    // only a hollow one goes to lyon's tessellator
+    let path = if convex(pts) { fan(pts) } else { lyon_fill(pts) };
+    if let Some(path) = path {
+        emit(win, path, c, a);
+    }
+}
+
+/// The triangles go to the GPU in one shape. (PULSE_NOPATH and PULSE_NOPATH_SEC leave them out, to measure.)
+fn emit(win: &mut Window, path: gpui::Path<gpui::Pixels>, c: C, a: f32) {
+    PATHS.with(|n| n.set(n.get() + 1));
+    if crate::perf::on() && (std::env::var("PULSE_NOPATH").is_ok() || crate::perf::skip_paths()) {
+        return;
+    }
+    win.paint_path(path, col(c, a));
+}
+
+fn pt(p: (f32, f32)) -> gpui::Point<gpui::Pixels> {
+    point(px(p.0), px(p.1))
+}
+
+const ST: (gpui::Point<f32>, gpui::Point<f32>, gpui::Point<f32>) = (gpui::Point { x: 0.0, y: 1.0 }, gpui::Point { x: 0.0, y: 1.0 }, gpui::Point { x: 0.0, y: 1.0 });
+
+/// Does the outline turn always the same way (no hollow, no crossing)?
+fn convex(pts: &[(f32, f32)]) -> bool {
+    let n = pts.len();
+    let (mut sign, mut turn) = (0.0f32, 0.0f32);
+    for i in 0..n {
+        let (p, q, r) = (pts[i], pts[(i + 1) % n], pts[(i + 2) % n]);
+        let cr = (q.0 - p.0) * (r.1 - q.1) - (q.1 - p.1) * (r.0 - q.0);
+        if cr.abs() < 1e-4 {
+            continue;
+        }
+        if sign == 0.0 {
+            sign = cr.signum();
+        } else if cr.signum() != sign {
+            return false;
+        }
+        // and goes round once only (a star turns the same way at every point, but twice)
+        let a1 = (q.1 - p.1).atan2(q.0 - p.0);
+        let a2 = (r.1 - q.1).atan2(r.0 - q.0);
+        let mut d = a2 - a1;
+        while d > PI { d -= TAU; }
+        while d < -PI { d += TAU; }
+        turn += d;
+    }
+    sign != 0.0 && turn.abs() < TAU * 1.5
+}
+
+fn fan(pts: &[(f32, f32)]) -> Option<gpui::Path<gpui::Pixels>> {
+    let mut path = gpui::Path::new(pt(pts[0]));
+    for i in 1..pts.len() - 1 {
+        path.push_triangle((pt(pts[0]), pt(pts[i]), pt(pts[i + 1])), ST);
+    }
+    Some(path)
+}
+
+fn lyon_fill(pts: &[(f32, f32)]) -> Option<gpui::Path<gpui::Pixels>> {
     let mut b = PathBuilder::fill();
-    b.move_to(point(px(pts[0].0), px(pts[0].1)));
+    b.move_to(pt(pts[0]));
     for p in &pts[1..] {
-        b.line_to(point(px(p.0), px(p.1)));
+        b.line_to(pt(*p));
     }
     b.close();
-    if let Ok(path) = b.build() {
-        PATHS.with(|n| n.set(n.get() + 1));
-        win.paint_path(path, col(c, a));
+    b.build().ok()
+}
+
+/// A line of `lw` through the points, made here as one band of triangles: at every corner the two sides meet at
+/// their mitre, so nothing overlaps (a see-through line keeps one even alpha). A sharp corner, where the mitre
+/// would reach far out, goes to lyon's stroker instead.
+fn stroke(pts: &[(f32, f32)], lw: f32) -> Option<gpui::Path<gpui::Pixels>> {
+    let mut v: Vec<(f32, f32)> = Vec::with_capacity(pts.len());
+    for p in pts {
+        if v.last().map(|l: &(f32, f32)| (l.0 - p.0).abs() + (l.1 - p.1).abs() > 1e-3).unwrap_or(true) {
+            // a point on the straight line the last two make adds nothing: the line goes on from it
+            let n = v.len();
+            if n >= 2 {
+                let (a, b) = (v[n - 2], v[n - 1]);
+                let cr = (b.0 - a.0) * (p.1 - b.1) - (b.1 - a.1) * (p.0 - b.0);
+                let dot = (b.0 - a.0) * (p.0 - b.0) + (b.1 - a.1) * (p.1 - b.1);
+                if cr.abs() < 1e-3 * ((b.0 - a.0).abs() + (b.1 - a.1).abs()).max(1.0) && dot > 0.0 {
+                    v[n - 1] = *p;
+                    continue;
+                }
+            }
+            v.push(*p);
+        }
     }
+    let n = v.len();
+    if n < 2 {
+        return None;
+    }
+    let closed = n > 2 && (v[0].0 - v[n - 1].0).abs() + (v[0].1 - v[n - 1].1).abs() < 1e-3;
+    let h = lw / 2.0;
+    let normal = |a: (f32, f32), b: (f32, f32)| {
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let l = (dx * dx + dy * dy).sqrt().max(1e-6);
+        (-dy / l, dx / l)
+    };
+    let mut off: Vec<(f32, f32)> = Vec::with_capacity(n);
+    for i in 0..n {
+        let prev = if i > 0 { Some(normal(v[i - 1], v[i])) } else if closed { Some(normal(v[n - 2], v[0])) } else { None };
+        let next = if i + 1 < n { Some(normal(v[i], v[i + 1])) } else if closed { Some(normal(v[0], v[1])) } else { None };
+        let o = match (prev, next) {
+            (Some(a), Some(b)) => {
+                let (mx, my) = (a.0 + b.0, a.1 + b.1);
+                let ml = (mx * mx + my * my).sqrt();
+                if ml < 1e-3 {
+                    return lyon_stroke(pts, lw); // it turns straight back
+                }
+                let (mx, my) = (mx / ml, my / ml);
+                let k = mx * a.0 + my * a.1; // cos of half the turn
+                if k < 0.5 {
+                    return lyon_stroke(pts, lw); // a sharp corner: the mitre would reach too far
+                }
+                (mx * h / k, my * h / k)
+            }
+            (Some(a), None) | (None, Some(a)) => (a.0 * h, a.1 * h),
+            (None, None) => return None,
+        };
+        off.push(o);
+    }
+    let l = |i: usize| (v[i].0 + off[i].0, v[i].1 + off[i].1);
+    let r = |i: usize| (v[i].0 - off[i].0, v[i].1 - off[i].1);
+    let mut path = gpui::Path::new(pt(l(0)));
+    for i in 0..n - 1 {
+        path.push_triangle((pt(l(i)), pt(l(i + 1)), pt(r(i + 1))), ST);
+        path.push_triangle((pt(l(i)), pt(r(i + 1)), pt(r(i))), ST);
+    }
+    Some(path)
+}
+
+fn lyon_stroke(pts: &[(f32, f32)], lw: f32) -> Option<gpui::Path<gpui::Pixels>> {
+    let mut b = PathBuilder::stroke(px(lw));
+    b.move_to(pt(pts[0]));
+    for p in &pts[1..] {
+        b.line_to(pt(*p));
+    }
+    b.build().ok()
 }
 
 pub fn line(win: &mut Window, pts: &[(f32, f32)], lw: f32, c: C, a: f32) {
@@ -100,14 +229,8 @@ pub fn line(win: &mut Window, pts: &[(f32, f32)], lw: f32, c: C, a: f32) {
             return;
         }
     }
-    let mut b = PathBuilder::stroke(px(lw.max(1.0)));
-    b.move_to(point(px(pts[0].0), px(pts[0].1)));
-    for p in &pts[1..] {
-        b.line_to(point(px(p.0), px(p.1)));
-    }
-    if let Ok(path) = b.build() {
-        PATHS.with(|n| n.set(n.get() + 1));
-        win.paint_path(path, col(c, a));
+    if let Some(path) = stroke(pts, lw.max(1.0)) {
+        emit(win, path, c, a);
     }
 }
 
@@ -291,23 +414,24 @@ pub fn lines(win: &mut Window, segs: &[((f32, f32), (f32, f32))], lw: f32, c: C,
     if segs.is_empty() || a <= 0.004 {
         return;
     }
-    let mut b = PathBuilder::stroke(px(lw.max(1.0)));
-    let mut any = false;
+    // every slanted segment a band of two triangles, all in one shape
+    let h = lw.max(1.0) / 2.0;
+    let mut path: Option<gpui::Path<gpui::Pixels>> = None;
     for (p, q) in segs {
         if (p.1 - q.1).abs() < 0.01 || (p.0 - q.0).abs() < 0.01 {
             line(win, &[*p, *q], lw, c, a); // straight across or up: a quad
             continue;
         }
-        any = true;
-        b.move_to(point(px(p.0), px(p.1)));
-        b.line_to(point(px(q.0), px(q.1)));
+        let (dx, dy) = (q.0 - p.0, q.1 - p.1);
+        let l = (dx * dx + dy * dy).sqrt().max(1e-6);
+        let (nx, ny) = (-dy / l * h, dx / l * h);
+        let (a0, a1, b1, b0) = ((p.0 + nx, p.1 + ny), (q.0 + nx, q.1 + ny), (q.0 - nx, q.1 - ny), (p.0 - nx, p.1 - ny));
+        let path = path.get_or_insert_with(|| gpui::Path::new(pt(a0)));
+        path.push_triangle((pt(a0), pt(a1), pt(b1)), ST);
+        path.push_triangle((pt(a0), pt(b1), pt(b0)), ST);
     }
-    if !any {
-        return;
-    }
-    if let Ok(path) = b.build() {
-        PATHS.with(|n| n.set(n.get() + 1));
-        win.paint_path(path, col(c, a));
+    if let Some(path) = path {
+        emit(win, path, c, a);
     }
 }
 

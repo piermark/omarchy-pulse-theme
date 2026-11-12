@@ -60,6 +60,8 @@ struct Map {
     k: Vec<f32>,
     cos: Vec<f32>,
     a: Vec<u8>,
+    /// for every row, the first and the last pixel on the ball (the loop skips the sky around it)
+    span: Vec<(usize, usize)>,
 }
 
 pub struct Sphere {
@@ -80,6 +82,9 @@ pub struct Sphere {
     pub prog: &'static str,
     led: Vec<(f32, f32)>,
     pics: std::collections::HashMap<&'static str, (String, Pixmap)>,
+    /// the screen under the content (its gradient, its stripes, its two lines) as it was last painted, and what it
+    /// was painted for: it changes only with the colours and the programme, so it is copied, not painted again
+    base: (String, Vec<u8>),
 }
 
 fn font_file() -> Option<Vec<u8>> {
@@ -394,7 +399,7 @@ impl Sphere {
                 led.push((phi, j as f32 / n as f32 * TAU));
             }
         }
-        Sphere { tex: Pixmap::new((TW * TX) as u32, (TH * TX) as u32).expect("the sphere's texture"), font, glyphs: Default::default(), map: None, out: Vec::new(), refl: Vec::new(), d: 0, avg: [0.0; 3], prog_i: 0, prog_at: 0.0, prog: "face", led, pics: Default::default() }
+        Sphere { tex: Pixmap::new((TW * TX) as u32, (TH * TX) as u32).expect("the sphere's texture"), font, glyphs: Default::default(), map: None, out: Vec::new(), refl: Vec::new(), d: 0, avg: [0.0; 3], prog_i: 0, prog_at: 0.0, prog: "face", led, pics: Default::default(), base: Default::default() }
     }
 
     /// pulse.js sphereProgram(): what is urgent first, then the face, the music, and the programmes in turn.
@@ -507,37 +512,45 @@ impl Sphere {
         let has_cam = prog == "camera" && self.picture("cam", f.cam, (TH * 1.8 * TX) as u32, (TH * 0.76 * TX) as u32);
         let has_door = prog == "door" && self.picture("door", f.door, (TH * 1.9 * TX) as u32, (TH * 0.88 * TX) as u32);
         let font = self.font.clone();
+        // the sphere is a screen: a glowing base that turns with it, content on top. The base depends only on the
+        // colours, the programme and an alert, so it is painted once and copied after that
+        let base_key = format!("{led_style}{prog}{hot:?}{ac:?}{a2:?}{fg:?}");
+        if self.base.0 == base_key && self.base.1.len() == self.tex.data().len() {
+            self.tex.data_mut().copy_from_slice(&self.base.1);
+        }
         let mut c = Tex { pm: &mut self.tex, font: font.as_deref(), glyphs: &mut self.glyphs, ts: Transform::from_scale(TX, TX), alpha: 1.0 };
-        // the sphere is a screen: a glowing base that turns with it, content on top
-        c.rect(0.0, 0.0, TW, TH, [0.0; 3], 1.0);
-        if led_style {
-            // the LED look: a dark screen, only what is drawn lights up
-            if let Some(h) = hot {
-                c.rect(0.0, 0.0, TW, TH, h, if prog == "alert" { 0.75 } else { 0.18 });
+        if self.base.0 != base_key || self.base.1.len() != c.pm.data().len() {
+            c.rect(0.0, 0.0, TW, TH, [0.0; 3], 1.0);
+            if led_style {
+                // the LED look: a dark screen, only what is drawn lights up
+                if let Some(h) = hot {
+                    c.rect(0.0, 0.0, TW, TH, h, if prog == "alert" { 0.75 } else { 0.18 });
+                }
+                c.rect(0.0, TH * 0.06, TW, 1.0, ac, 0.22);
+                c.rect(0.0, TH * 0.93, TW, 1.0, ac, 0.22);
+            } else {
+                let stops = vec![
+                    tiny_skia::GradientStop::new(0.0, color(hot.unwrap_or(a2), 0.95)),
+                    tiny_skia::GradientStop::new(0.5, color(hot.unwrap_or(mixc(a2, ac, 0.5)), 0.8)),
+                    tiny_skia::GradientStop::new(1.0, color(hot.unwrap_or(ac), 0.95)),
+                ];
+                if let (Some(sh), Some(r)) = (tiny_skia::LinearGradient::new((0.0, 0.0).into(), (0.0, TH).into(), stops, tiny_skia::SpreadMode::Pad, Transform::identity()), Rect::from_xywh(0.0, 0.0, TW, TH)) {
+                    let p = Paint { shader: sh, anti_alias: false, ..Default::default() };
+                    c.pm.fill_rect(r, &p, c.ts, None);
+                }
+                let dark = if prog == "face" || prog == "alert" { 0.08 } else { 0.16 };
+                let mut i = 0.0;
+                while i < TW {
+                    c.rect(i, 0.0, 3.0, TH, [0.0; 3], dark); // faint stripes fixed to the sphere: you see it turn
+                    i += 24.0;
+                }
+                c.rect(0.0, TH * 0.06, TW, 1.0, fg, 0.5);
+                c.rect(0.0, TH * 0.93, TW, 1.0, fg, 0.5);
+                if matches!(prog, "music" | "camera" | "door") {
+                    c.rect(0.0, 0.0, TW, TH, [0.0; 3], 0.7);
+                }
             }
-            c.rect(0.0, TH * 0.06, TW, 1.0, ac, 0.22);
-            c.rect(0.0, TH * 0.93, TW, 1.0, ac, 0.22);
-        } else {
-            let stops = vec![
-                tiny_skia::GradientStop::new(0.0, color(hot.unwrap_or(a2), 0.95)),
-                tiny_skia::GradientStop::new(0.5, color(hot.unwrap_or(mixc(a2, ac, 0.5)), 0.8)),
-                tiny_skia::GradientStop::new(1.0, color(hot.unwrap_or(ac), 0.95)),
-            ];
-            if let (Some(sh), Some(r)) = (tiny_skia::LinearGradient::new((0.0, 0.0).into(), (0.0, TH).into(), stops, tiny_skia::SpreadMode::Pad, Transform::identity()), Rect::from_xywh(0.0, 0.0, TW, TH)) {
-                let p = Paint { shader: sh, anti_alias: false, ..Default::default() };
-                c.pm.fill_rect(r, &p, c.ts, None);
-            }
-            let dark = if prog == "face" || prog == "alert" { 0.08 } else { 0.16 };
-            let mut i = 0.0;
-            while i < TW {
-                c.rect(i, 0.0, 3.0, TH, [0.0; 3], dark); // faint stripes fixed to the sphere: you see it turn
-                i += 24.0;
-            }
-            c.rect(0.0, TH * 0.06, TW, 1.0, fg, 0.5);
-            c.rect(0.0, TH * 0.93, TW, 1.0, fg, 0.5);
-            if matches!(prog, "music" | "camera" | "door") {
-                c.rect(0.0, 0.0, TW, TH, [0.0; 3], 0.7);
-            }
+            self.base = (base_key, c.pm.data().to_vec());
         }
         let fx = front + (t * 0.25).sin() * TW * 0.04; // content gently sways around the front
         let at = [fx, fx - TW, fx + TW];
@@ -731,7 +744,7 @@ impl Sphere {
     fn make_map(d: usize) -> Map {
         let (r, n) = (d as f32 / 2.0, d * d);
         let rows = ((d as f32 / 2.6).round()).max(40.0);
-        let mut m = Map { d, v: vec![-1; n], lam: vec![0.0; n], k: vec![0.0; n], cos: vec![0.0; n], a: vec![0; n] };
+        let mut m = Map { d, v: vec![-1; n], lam: vec![0.0; n], k: vec![0.0; n], cos: vec![0.0; n], a: vec![0; n], span: vec![(0, 0); d] };
         for y in 0..d {
             for x in 0..d {
                 let i = y * d + x;
@@ -744,7 +757,12 @@ impl Sphere {
                 let phi = (-ny).asin();
                 let v_row = (0.5 - phi / PI) * TH * TX;
                 m.v[i] = (v_row as i32).clamp(0, (TH * TX) as i32 - 1);
-                m.lam[i] = nx.atan2(nz);
+                m.lam[i] = nx.atan2(nz) / TAU; // in turns
+                let sp = &mut m.span[y];
+                if sp.1 == 0 {
+                    sp.0 = x;
+                }
+                sp.1 = x + 1;
                 m.cos[i] = phi.cos();
                 let row_f = ((0.5 - phi / PI) * rows).rem_euclid(1.0); // between two rows of LEDs: darker
                 let grid = 0.62 + 0.38 * (row_f * PI).sin().powf(0.6);
@@ -843,18 +861,25 @@ impl Sphere {
         let shade: [f32; 256] = std::array::from_fn(|i| 0.7 + 0.3 * ((i as f32 + 0.5) / 256.0 * PI).sin().sqrt());
         // the picture and, in the same pass, its reflection (upside down, at 20%) for the wet floor
         let twf = twp as f32;
+        let rot_t = rot / TAU;
+        // the reflection shows only its upper part (the floor's clip): the rows of the ball that end up there
+        let refl_from = d * 3 / 10;
         for y in 0..d {
+            let (x0, x1) = m.span[y];
+            if x1 <= x0 {
+                continue; // a row of sky: the buffers are already clear
+            }
+            let row0 = y * d;
             let ry = (d - 1 - y) * d;
-            for x in 0..d {
-                let i = y * d + x;
-                let (o, ro) = (i * 4, (ry + x) * 4);
-                let v = m.v[i];
+            let out_row = &mut self.out[(row0 + x0) * 4..(row0 + x1) * 4];
+            let (v_r, lam_r, cos_r, k_r, a_r) = (&m.v[row0 + x0..row0 + x1], &m.lam[row0 + x0..row0 + x1], &m.cos[row0 + x0..row0 + x1], &m.k[row0 + x0..row0 + x1], &m.a[row0 + x0..row0 + x1]);
+            let mut refl_row = if y >= refl_from { Some(&mut self.refl[(ry + x0) * 4..(ry + x1) * 4]) } else { None };
+            for j in 0..(x1 - x0) {
+                let v = v_r[j];
                 if v < 0 {
-                    self.out[o + 3] = 0;
-                    self.refl[ro + 3] = 0;
                     continue;
                 }
-                let q = (m.lam[i] + rot) / TAU;
+                let q = lam_r[j] + rot_t;
                 let uu = q - q.floor();
                 // between two texels: mixed by how far, so the content glides around the sphere instead of
                 // stepping a texel at a time (pulse.js takes the nearest one)
@@ -864,16 +889,20 @@ impl Sphere {
                 let fu = uf - u0 as f32;
                 let row = v as usize * twp;
                 let (t0, t1) = ((row + u0) * 4, (row + u1) * 4);
-                let cq = uu * cols * m.cos[i];
+                let cq = uu * cols * cos_r[j];
                 let col_f = cq - cq.floor(); // between two columns: darker
-                let k = m.k[i] * shade[((col_f * 255.0) as usize).min(255)] * lift;
-                let r = td[t0] as f32 * (1.0 - fu) + td[t1] as f32 * fu;
-                let g = td[t0 + 1] as f32 * (1.0 - fu) + td[t1 + 1] as f32 * fu;
-                let b = td[t0 + 2] as f32 * (1.0 - fu) + td[t1 + 2] as f32 * fu;
-                let px4 = [(b * k + bg_b).min(255.0) as u8, (g * k + bg_g).min(255.0) as u8, (r * k + bg_r).min(255.0) as u8, m.a[i]];
-                self.out[o..o + 4].copy_from_slice(&px4);
-                self.refl[ro..ro + 4].copy_from_slice(&[px4[0], px4[1], px4[2], (m.a[i] as f32 * 0.2) as u8]);
-                if i & 15 == 0 {
+                let k = k_r[j] * shade[((col_f * 255.0) as usize).min(255)] * lift;
+                let (p0, p1) = (&td[t0..t0 + 3], &td[t1..t1 + 3]);
+                let r = p0[0] as f32 + (p1[0] as f32 - p0[0] as f32) * fu;
+                let g = p0[1] as f32 + (p1[1] as f32 - p0[1] as f32) * fu;
+                let b = p0[2] as f32 + (p1[2] as f32 - p0[2] as f32) * fu;
+                let a = a_r[j];
+                let px4 = [(b * k + bg_b).min(255.0) as u8, (g * k + bg_g).min(255.0) as u8, (r * k + bg_r).min(255.0) as u8, a];
+                out_row[j * 4..j * 4 + 4].copy_from_slice(&px4);
+                if let Some(rr) = refl_row.as_deref_mut() {
+                    rr[j * 4..j * 4 + 4].copy_from_slice(&[px4[0], px4[1], px4[2], (a as u32 * 51 / 255) as u8]);
+                }
+                if (row0 + x0 + j) & 15 == 0 {
                     sr += r;
                     sg += g;
                     sb += b;

@@ -649,18 +649,23 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
     if !bare && !simple {
         crate::extra::ground(win, st, pal, &frame, &mut world.more, t, &mut world.labels, kind);
         crate::extra::net(win, st, pal, &frame, &mut world.more, t, &mut world.labels);
+        lap.mark("fs-ground-net");
         // pulse.js drawCars(): your network's traffic, lights running in and out along the grid
         if !simple {
             let bass = if world.audio.is_empty() { 0.0 } else { world.audio.iter().take(4).sum::<f32>() / 4.0 / 100.0 };
             world.floor.river(win, cx, font, st, pal, ox, oy, w, h, dt * 20.0, still_l);
+            lap.mark("fs-river");
             world.floor.cars(win, cx, font, st, pal, ox, oy, w, h, tf, bass, kind);
+            lap.mark("fs-cars");
             crate::floor::car(win, cx, font, st, pal, ox, oy, h, tf, world.band, (t - world.car_at) as f32, kind);
+            lap.mark("fs-car");
         }
         if !simple && !calm && !orbit && !noir {
             // pulse.js: the datacenter, the trains, the robots, the candles
             let share = get(st, &["privacy"]).as_bool().unwrap_or(false) || get(st, &["screencast"]).as_bool().unwrap_or(false);
             let band = world.band;
             world.street.datacenter(win, cx, font, st, pal, ox, oy, w, h, tf, t, band, wn.max(wt), still_l);
+            lap.mark("fs-dc");
             for (x, y, words) in std::mem::take(&mut world.street.zaps) {
                 crate::extra::event(&mut world.more, "lightning", &serde_json::json!({ "x": x - ox, "y": y - oy }), t, world.last.as_ref());
                 world.say = Some((t, words));
@@ -671,7 +676,9 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
                 world.bursts.push((t, (x - ox) / w, (y - oy) / h, world.seed >> 20, true));
             }
             world.street.trains(win, cx, font, st, pal, ox, oy, h, tf, band, share);
+            lap.mark("fs-trains");
             world.street.robots(win, cx, font, st, pal, ox, oy, h, tf, band, dt * 20.0, share);
+            lap.mark("fs-robots");
             world.street.candles(win, cx, font, st, pal, ox, oy, w, h, tf, still_l, share);
         }
     }
@@ -717,8 +724,10 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
             let mut yv = 0.0;
             for age in &ages {
                 let fade = (1.0 - age / 1.8).max(0.0);
-                if fade > 0.0 {
-                    yv += ecg(dx - age * 0.32) * amp * fade;
+                let u = dx - age * 0.32;
+                if fade > 0.0 && u > -0.2 && u < 0.3 {
+                    // (further away a beat is flat: e^-(0.2²/2·0.035²) is nothing)
+                    yv += ecg(u) * amp * fade;
                 }
             }
             if !audio.is_empty() {

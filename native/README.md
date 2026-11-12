@@ -4,7 +4,7 @@ A parallel renderer for Omarchy Pulse. The web page stays the default (and is wh
 paints the same wallpaper natively on the GPU, with no browser underneath. It reads the same hub: the same
 `omarchy-pulse` service, the same token and the same `pulse.toml`.
 
-**Status: 0.15, experimental.** The web page stays the default. This renderer is being made a line-by-line
+**Status: 0.16, experimental.** The web page stays the default. This renderer is being made a line-by-line
 translation of the published Pulse 1.8 (`pulse.js` and `pulse.css`), so that it looks and moves the same, and a
 little more like a game where the web page cannot: lights that burn white at their core (the canvas's "lighter"
 mode, which GPUI does not have), the Sun's starburst and lens flare, beams of the sphere's light turning in the wet
@@ -59,6 +59,7 @@ cd ~/pulse-native && git pull && cd native && cargo build --release && ./install
 | `--scene S` | `skyline`, `sphere`, `orbit`, `calm`, `hacker`, `noir`, `mars`, `monolith`, `pond`, `city`; by default the hub's `[pulse] scene` |
 | `--fps N` | the most frames a second, 5 to 60 (default: the hub's `[pulse] fps`, else 20) |
 | `--cpu N` | the most of one core it may use, in percent (default 15; also `PULSE_CPU`) |
+| `--gpu G` | `auto` (default), `gl` or `vulkan` (also `PULSE_GPU`): `auto` draws with OpenGL on Intel Ivy Bridge and Haswell |
 | `--url URL` | the hub (default `http://127.0.0.1:` + `PULSE_PORT` or `[pulse] port`) |
 | `--font NAME` | the font (default: `[pulse] font`, else CaskaydiaMono Nerd Font) |
 | `--version` | print the version |
@@ -68,11 +69,21 @@ cd ~/pulse-native && git pull && cd native && cargo build --release && ./install
 
 The GPU does the drawing: rectangles, circles and straight lines are quads it draws as instances, glows are small
 pictures it keeps, the panels are a view GPUI keeps and draws again until they change (a new state, a new second, a
-text typing out), many lines (the rain, the grid) go as one shape. The CPU still builds the slanted shapes and
-computes the sphere's pixels (GPUI has no shaders of one's own). Frames come at an even pace; when nothing fast
-moves (no music, nothing falling, no fireworks, launch or shooting star, no pointer to follow) 12 frames a second
-are drawn, all of them when something does; and the wallpaper stays under its CPU budget (`--cpu`), never under 8
-frames a second. Under a fullscreen window it draws once a second; covered, not at all.
+text typing out), many lines (the rain, the grid) go as one shape. The slanted shapes are made into triangles here at
+once (a fan for a convex one, a band for a line), and GPUI draws each group of them in a target as big as the group,
+not as big as the screen (see `vendor/gpui_ce_wgpu/PULSE-NATIVE.md`): the same antialiasing, a fraction of the memory
+traffic, which is what held back older GPUs and 4K screens. Everything stays at the screen's full resolution.
+
+Frames come at an even pace; when nothing fast moves (no music, nothing falling, no fireworks, launch or shooting
+star, no pointer to follow) 10 frames a second are drawn, 6 while you are away, all of them when something does. The
+wallpaper stays under its CPU budget (`--cpu`), measured as `top` measures it: the whole process, the GPU driver
+included, every two seconds; over it the frames a second come down at once (never under 6), well under it they come
+back one at a time. Under a fullscreen window it draws once a second; covered, not at all. Memory freed is given back
+to the system once a minute.
+
+On Intel Ivy Bridge and Haswell, Mesa's Vulkan driver says "Haswell Vulkan support is incomplete" and can stall: there
+pulse-native draws with OpenGL (Mesa's crocus driver, complete on those chips). `--gpu vulkan` or `--gpu gl` choose it
+by hand.
 
 To compare it with the web wallpaper on your PC, measure both the same way, a minute each. The web wallpaper runs
 in the hub's own process (`omarchy-pulse`) with WebKit's processes beside it; the native one runs beside the hub.
@@ -127,6 +138,14 @@ From the same state the web page reads:
   again, Save, Cancel, Reset.
 - **pond**, the example scene; in the editor's scenes a picture's tint and the clicks on shapes with their actions;
   camera panels, and the camera and the car on the sphere.
+
+## Changes
+
+- **0.16**: the shapes GPUI draws in groups cost a whole screen of memory per group (about 60 a frame): now only as
+  much as the group, with the same quality; slanted shapes made without the tessellator; the sphere's screen painted
+  once and its pixels in a faster loop; the CPU budget measured on the whole process; OpenGL on Ivy Bridge and
+  Haswell; memory given back; a click on the notifications panel clears it, a click on a light toggles it.
+- **0.15**: the 1.8 look as a game would draw it: hot lights, the Sun's flare, the sphere's beams and dust.
 
 ## Still different from the web page
 
