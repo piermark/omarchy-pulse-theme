@@ -580,10 +580,11 @@ pub fn over(win: &mut Window, st: &Value, pal: &Pal, f: &Frame, mem: &mut Mem, t
             x += 8.0;
         }
         pts.push((w, h));
-        g.poly(&pts, mix(if q.2 { pal.crit } else { ac }, pal.bg, 0.5), 0.6 * env);
+        // createLinearGradient(0, base - (H - hz) * .2, 0, H): the alarm's colour at the crest, the night at your feet
+        crate::xf::grad_fill(g.win, &crate::xf::Xf::at(f.ox, f.oy), &pts, base - (h - hz) * 0.2, h, &[(0.0, if q.2 { pal.crit } else { ac }, 0.45 * env), (1.0, pal.bg, 0.8 * env)], 16);
         g.line(&pts[1..pts.len() - 1], (h / 600.0).max(1.0), fg, 0.55 * env);
         if (age * 2.0) as i32 % 2 == 0 {
-            lab(labels, w / 2.0, base - (h - hz) * 0.07, h / 34.0, if q.2 { pal.crit } else { pal.warn }, 0.9 * env, "TSUNAMI".into(), true);
+            lab(labels, w / 2.0, base - (h - hz) * 0.04, h / 34.0, if q.2 { pal.crit } else { pal.warn }, 0.9 * env, "TSUNAMI".into(), true);
         }
     }
     // the new year: the last hour quietly, the last minute big, then fireworks for a quarter of an hour

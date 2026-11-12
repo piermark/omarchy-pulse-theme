@@ -823,6 +823,8 @@ impl Sphere {
         let cols = twp as f32 / 2.0; // LED columns around the sphere
         let (bg_r, bg_g, bg_b) = (bg[0] * 0.6, bg[1] * 0.6, bg[2] * 0.6); // dark LEDs take the night's colour
         let (mut sr, mut sg, mut sb, mut cnt) = (0.0f32, 0.0f32, 0.0f32, 0u32);
+        // 0.7 + 0.3 * sqrt(sin(x * PI)), looked up instead of computed for every pixel
+        let shade: [f32; 256] = std::array::from_fn(|i| 0.7 + 0.3 * ((i as f32 + 0.5) / 256.0 * PI).sin().sqrt());
         for i in 0..d * d {
             let o = i * 4;
             let v = m.v[i];
@@ -830,11 +832,13 @@ impl Sphere {
                 self.out[o + 3] = 0;
                 continue;
             }
-            let uu = ((m.lam[i] + rot) / TAU).rem_euclid(1.0);
+            let q = (m.lam[i] + rot) / TAU;
+            let uu = q - q.floor();
             let u = ((uu * twp as f32) as usize).min(twp - 1);
             let ti = (v as usize * twp + u) * 4;
-            let col_f = (uu * cols * m.cos[i]).rem_euclid(1.0); // between two columns: darker
-            let k = m.k[i] * (0.7 + 0.3 * (col_f * PI).sin().sqrt()) * lift;
+            let cq = uu * cols * m.cos[i];
+            let col_f = cq - cq.floor(); // between two columns: darker
+            let k = m.k[i] * shade[((col_f * 255.0) as usize).min(255)] * lift;
             let (r, g, b) = (td[ti] as f32, td[ti + 1] as f32, td[ti + 2] as f32);
             self.out[o] = (b * k + bg_b).min(255.0) as u8;
             self.out[o + 1] = (g * k + bg_g).min(255.0) as u8;

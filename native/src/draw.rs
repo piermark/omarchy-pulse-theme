@@ -144,6 +144,8 @@ pub fn soft(win: &mut Window, cx: f32, cy: f32, r0: f32, r1: f32, sy: f32, c: C,
     let top = stops.iter().fold(0.0f32, |m, s| m.max(s.1)).min(1.0);
     let level = (top * 32.0).round().clamp(1.0, 32.0) as u64;
     let r0f = (r0 / r1).clamp(0.0, 0.99);
+    // colours that change all the time (the sphere's light) would make a new picture every frame: 32 steps a channel
+    let c = [(c[0].clamp(0.0, 1.0) * 31.0).round() / 31.0, (c[1].clamp(0.0, 1.0) * 31.0).round() / 31.0, (c[2].clamp(0.0, 1.0) * 31.0).round() / 31.0];
     let mut key: u64 = 1469598103934665603;
     let mut mixk = |v: u64| { key ^= v; key = key.wrapping_mul(1099511628211); };
     for v in c { mixk((v.clamp(0.0, 1.0) * 255.0) as u64) }
@@ -187,7 +189,7 @@ pub fn soft(win: &mut Window, cx: f32, cy: f32, r0: f32, r1: f32, sy: f32, c: C,
             let i = std::sync::Arc::new(gpui::RenderImage::new(vec![image::Frame::new(im)]));
             let old: Vec<_> = SOFT.with(|m| {
                 let mut m = m.borrow_mut();
-                let old = if m.len() > 800 { m.drain().map(|x| x.1).collect() } else { Vec::new() };
+                let old = if m.len() > 400 { m.drain().map(|x| x.1).collect() } else { Vec::new() };
                 m.insert(key, i.clone());
                 old
             });

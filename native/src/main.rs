@@ -12,6 +12,7 @@
 mod backdrop;
 mod cities_data;
 mod city;
+mod core;
 mod design;
 mod draw;
 mod drones;
@@ -87,7 +88,10 @@ struct Pulse {
     last_cursor: Option<Instant>,
     sounded: f64,
     /// camera panels: the frame shown now, by panel id
-    cams: std::collections::HashMap<String, (String, Arc<gpui::Image>)>,
+    /// the panels: their data, their cached view, and what they were last made from
+    hud_data: Rc<RefCell<HudData>>,
+    hud: gpui::Entity<Hud>,
+    hud_key: String,
     /// a design's pictures as they came, and the tinted ones made from them
     raw_assets: std::collections::HashMap<String, Vec<u8>>,
     tinted: std::collections::HashMap<String, Option<Arc<gpui::Image>>>,
@@ -99,10 +103,7 @@ struct Pulse {
     cap: Rc<std::cell::Cell<(u64, u32, f64)>>,
     /// what the last frame cost on the CPU (ms): the panels, then the scene
     cost: Rc<std::cell::Cell<(f64, f64)>>,
-    /// every panel on the screen now, for the planes
-    ui_boxes: Rc<RefCell<Vec<[f32; 4]>>>,
     /// text panels: the text and when it started to be typed out
-    typed: std::collections::HashMap<String, (String, f64)>,
     was_away: bool,
     /// the first camera's frame as it came (the sphere shows it in its turn)
     cam_bytes: Option<(String, Arc<Vec<u8>>)>,
@@ -128,10 +129,10 @@ impl Pulse {
                     cx.notify();
                     // pulse.js: when a frame costs more than half its time, 70% of the frames; full speed again after a minute
                     let (mut cap, mut slow, mut at) = this.cap.get();
-                    let (c1, c2) = this.cost.get();
+                    let (frame_ms, _) = this.cost.get();
                     let now = this.started.elapsed().as_secs_f64();
                     let budget = 1000.0 / want.min(cap).max(1) as f64;
-                    if c1 + c2 > budget * 0.5 && want.min(cap) > 6 {
+                    if frame_ms > budget * 0.5 && want.min(cap) > 6 {
                         slow += 1;
                         if slow as u64 > 3 * want.min(cap) {
                             cap = ((want.min(cap) as f64 * 0.7) as u64).max(6);
@@ -142,6 +143,14 @@ impl Pulse {
                     }
                     if at > 0.0 && now - at > 60.0 {
                         (cap, at) = (60, 0.0);
+                    }
+                    // and never more than the CPU budget: frames a second × what a frame costs ≤ budget
+                    if frame_ms > 0.0 {
+                        let most = ((cpu_budget() * 10.0 / frame_ms) as u64).max(8);
+                        cap = cap.min(most.max(1));
+                        if at == 0.0 && most < 60 {
+                            at = now - 50.0; // look again in ten seconds
+                        }
                     }
                     this.cap.set((cap, slow, at));
                     cap
@@ -157,7 +166,9 @@ impl Pulse {
         })
         .detach();
         let world = scene::World::new();
-        Pulse { hub, live, forced: !scene.is_empty(), scene, city: Rc::new(RefCell::new(city::World::new())), world: Rc::new(RefCell::new(world)), marks: Rc::new(RefCell::new(Vec::new())), mem: Rc::new(RefCell::new(design::Mem::default())), drawn: Rc::new(RefCell::new((Vec::new(), Vec::new()))), assets: (String::new(), Default::default()), reacted: 0.0, started: Instant::now(), font: font.into(), base, primary, monkey, origin: (0.0, 0.0), sound: sound::Sound::new(), wallpaper: (String::new(), None, None), cover: (String::new(), None), seen_alert: -1, incoming: None, seen_digest: 0, digest: None, ack: None, last_cursor: None, sounded: 0.0, cams: Default::default(), raw_assets: Default::default(), tinted: Default::default(), draft: None, drag: None, boxes: Default::default(), ui_boxes: Default::default(), cap: Rc::new(std::cell::Cell::new((60, 0, 0.0))), cost: Default::default(), typed: Default::default(), was_away: false, cam_bytes: None }
+        let hud_data: Rc<RefCell<HudData>> = Default::default();
+        let hud = cx.new(|_| Hud { data: hud_data.clone() });
+        Pulse { hub, live, forced: !scene.is_empty(), scene, city: Rc::new(RefCell::new(city::World::new())), world: Rc::new(RefCell::new(world)), marks: Rc::new(RefCell::new(Vec::new())), mem: Rc::new(RefCell::new(design::Mem::default())), drawn: Rc::new(RefCell::new((Vec::new(), Vec::new()))), assets: (String::new(), Default::default()), reacted: 0.0, started: Instant::now(), font: font.into(), base, primary, monkey, origin: (0.0, 0.0), sound: sound::Sound::new(), wallpaper: (String::new(), None, None), cover: (String::new(), None), seen_alert: -1, incoming: None, seen_digest: 0, digest: None, ack: None, last_cursor: None, sounded: 0.0, hud_data, hud, hud_key: String::new(), raw_assets: Default::default(), tinted: Default::default(), draft: None, drag: None, boxes: Default::default(), cap: Rc::new(std::cell::Cell::new((60, 0, 0.0))), cost: Default::default(), was_away: false, cam_bytes: None }
     }
 
     /// A click on the wallpaper: a storm over a failing panel (twice: acknowledge it), or something of the scene,
@@ -225,6 +236,13 @@ fn urlenc(s: &str) -> String {
 }
 
 /// Is this monitor covered (nothing to draw), and how many frames a second otherwise: pulse.js's Scene.mode.
+/// How much of one core the wallpaper may use (percent): `--cpu N` or PULSE_CPU, 15 by default. The frames a second
+/// come down until a second of frames costs no more than that (never under 8); a fast PC keeps all of them.
+static CPU_BUDGET: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+fn cpu_budget() -> f64 {
+    *CPU_BUDGET.get_or_init(|| std::env::var("PULSE_CPU").ok().and_then(|v| v.parse::<f64>().ok()).map(|v| v.clamp(3.0, 100.0)).unwrap_or(15.0))
+}
+
 fn pace(st: &Value, key: &str, fps: u64, forced_scene: &str, primary: bool) -> (bool, u64) {
     let m = get(st, &["mons", key]);
     let ui = get(st, &["ui"]);
@@ -343,9 +361,17 @@ impl Render for Pulse {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let a = Instant::now();
         let el = crate::perf::time("render", || self.render_inner(window, cx));
-        let c = self.cost.get();
-        self.cost.set((a.elapsed().as_secs_f64() * 1000.0, c.1));
-        el
+        // the whole frame on the CPU, from here to the end of the last element's paint (smoothed): what the frame rate
+        // is measured against
+        let (measure, cost) = (crate::perf::on(), self.cost.clone());
+        el.child(canvas(|_, _, _| (), move |_, _, _, _| {
+            let ms = a.elapsed().as_secs_f64() * 1000.0;
+            let c = cost.get();
+            cost.set((if c.0 <= 0.0 { ms } else { c.0 * 0.9 + ms * 0.1 }, c.1));
+            if measure {
+                crate::perf::record("frame", ms);
+            }
+        }).absolute().size_0())
     }
 }
 
@@ -368,14 +394,15 @@ impl Pulse {
         {
             // camera panels: the frame the hub fetched, decoded once
             if let Ok(snap) = self.hub.lock() {
-                self.cams.retain(|k, _| snap.cams.contains_key(k));
+                let mut hd = self.hud_data.borrow_mut();
+                hd.cams.retain(|k, _| snap.cams.contains_key(k));
                 for (id, (frame, bytes)) in snap.cams.iter() {
-                    if self.cams.get(id).map(|c| &c.0 != frame).unwrap_or(true) {
-                        self.cams.insert(id.clone(), (frame.clone(), picture::image(bytes)));
+                    if hd.cams.get(id).map(|c| &c.0 != frame).unwrap_or(true) {
+                        hd.cams.insert(id.clone(), (frame.clone(), picture::image(bytes)));
                     }
                 }
             }
-            self.world.borrow_mut().has_cam = !self.cams.is_empty();
+            self.world.borrow_mut().has_cam = !self.hud_data.borrow().cams.is_empty();
             // pulse.js: the panel "cam", or the first picture panel; never while the screen is shared
             self.cam_bytes = if get(&st, &["privacy"]).as_bool().unwrap_or(false) { None } else { self.hub.lock().ok().and_then(|snap| snap.cams.get("cam").or_else(|| snap.cams.values().next()).map(|c| (c.0.clone(), c.1.clone()))) };
         }
@@ -449,7 +476,7 @@ impl Pulse {
             world.hm = hm0.clone();
             // "THU NOV 12", as toDateString() says it
             world.date_short = { let p: Vec<&str> = date0.split(' ').collect(); if p.len() >= 3 { format!("{} {} {}", p[0], p[2], p[1]) } else { date0.clone() } };
-            world.typing = self.typed.values().any(|(full, since)| (((t - since) / 0.04) as usize).saturating_mul(3) < full.chars().count());
+            world.typing = self.hud_data.borrow().typed.values().any(|(full, since)| (((t - since) / 0.04) as usize).saturating_mul(3) < full.chars().count());
             if self.was_away && !away {
                 world.woke_at = t;
             }
@@ -528,7 +555,7 @@ impl Pulse {
         let scene_pal = if scene_name == "hacker" { modes::green(&pal) } else { pal };
         let (design2, scene_st2, mem2, drawn_out) = (design.clone(), scene_st.clone(), self.mem.clone(), self.drawn.clone());
         let scene_font: SharedString = { let f = text(&st, &["ui", "font"]); if f.is_empty() { self.font.clone() } else { f.into() } };
-        let boxes_in = self.ui_boxes.clone();
+        let boxes_in = self.hud_data.borrow().ui_boxes.clone();
         let cost_out = self.cost.clone();
         let sky = canvas(
             |_, _, _| {},
@@ -547,7 +574,7 @@ impl Pulse {
                 }
                 *marks_out.borrow_mut() = marks;
                 let c = cost_out.get();
-                cost_out.set((c.0, began.elapsed().as_secs_f64() * 1000.0));
+                cost_out.set((c.0, began.elapsed().as_secs_f64() * 1000.0)); // the scene alone, for PULSE_PERF
             },
         )
         .absolute()
@@ -556,131 +583,46 @@ impl Pulse {
         // ---- the panels, the clock and the ticker: pulse.css in rem, so the same layout fits every screen
         let rr = ui::rem(w, h);
         let uix = ui::Ui { r: rr, pal: &pal, private, now: hub_now };
-        let sec_n: f32 = sec.parse().unwrap_or(0.0);
-        let clock_el = div().absolute().top(px((3.6 + 1.2 - 0.75) * rr)).left(px(29.6 * rr)).w(px((w - 59.2 * rr).max(0.0))).flex().justify_center().child(uix.clock(&st, &hm, &sec, sec_n / 59.0, &date));
-        let mut mine: Vec<&Value> = list(&st, &["widgets"]).iter().collect();
-        mine.sort_by(|a, b| a.get("order").and_then(Value::as_f64).unwrap_or(50.0).total_cmp(&b.get("order").and_then(Value::as_f64).unwrap_or(50.0)));
-        // pulse.js render(): system and network on the left, the weather on the right, yours where they say (or,
-        // with slot "auto", images and status boards right, text in the middle, the rest where there is less)
-        let mut items: Vec<(String, String, f64, ui::Panel)> = Vec::new();
-        let ui_cfg = get(&st, &["ui"]);
-        let has_cpu = get(&st, &["sys", "cpu"]).is_number();
-        let mut order_of = std::collections::HashMap::<&str, f64>::new();
-        let mut push = |items: &mut Vec<(String, String, f64, ui::Panel)>, slot: &str, p: ui::Panel| {
-            let o = order_of.entry(if slot == "left" { "left" } else if slot == "right" { "right" } else { "center" }).or_insert(0.0);
-            items.push((p.id.clone(), slot.to_string(), *o, p));
-            *o += 10.0;
-        };
-        if has_cpu && get(ui_cfg, &["system"]).as_bool() != Some(false) {
-            push(&mut items, "left", uix.sys(&st));
-        }
-        if has_cpu && get(ui_cfg, &["network"]).as_bool() != Some(false) {
-            push(&mut items, "left", uix.net(&st));
-        }
-        if get(&st, &["weather"]).is_object() {
-            push(&mut items, "right", uix.weather(&st));
-        }
-        let (mut nl, mut nr) = (2, 1);
-        let mut ticker_ws: Vec<&Value> = Vec::new();
-        for wd in mine.iter() {
-            let mut sl = text(wd, &["slot"]);
-            if sl == "ticker" {
-                ticker_ws.push(wd);
-                continue;
-            }
-            let ty = text(wd, &["type"]);
-            if sl.is_empty() || sl == "auto" {
-                sl = if ty == "image" || ty == "status" { "right".into() } else if ty == "text" { "center".into() } else if nl <= nr { "left".into() } else { "right".into() };
-            }
-            let id = text(wd, &["id"]);
-            // a text panel types itself out again when its text changes
-            let typed = if ty == "text" || ty.is_empty() {
-                let full = text(wd, &["data", "text"]);
-                let e = self.typed.entry(id.clone()).or_insert((full.clone(), t));
-                if e.0 != full {
-                    *e = (full.clone(), t);
-                }
-                Some((((t - e.1) / 0.04) as usize).saturating_mul(3))
-            } else {
-                None
-            };
-            let p = uix.generic(wd, &sl, typed, self.cams.get(&id).map(|c| c.1.clone()));
-            match sl.as_str() {
-                "left" => nl += 1,
-                "center" => {}
-                _ => { nr += 1; sl = "right".into() }
-            }
-            push(&mut items, &sl, p);
-        }
-        let col_h = h / rr - 3.6 - 3.0 - 0.8;
-        let mut left = div().absolute().left(px(2.2 * rr)).top(px((3.6 + 0.8) * rr)).w(px(25.0 * rr)).h(px(col_h * rr)).flex().flex_col().gap(px(1.5 * rr));
-        let mut right = div().absolute().right(px(2.2 * rr)).top(px((3.6 + 0.8) * rr)).w(px(25.0 * rr)).h(px(col_h * rr)).flex().flex_col().gap(px(1.5 * rr));
-        let centre_w = (w / rr - 59.2).min(46.0).max(0.0);
-        let centre_top = 3.6 + 1.2 + 8.64 + 1.9 + 1.5 + 1.8 + if text(&st, &["ui", "title"]).is_empty() { 0.0 } else { 1.6 } + 0.8 + 0.8;
-        let mut centre = div().absolute().top(px(centre_top * rr)).left(px((w / rr - centre_w) / 2.0 * rr)).w(px(centre_w * rr)).max_h(px(17.7 * rr)).overflow_hidden().flex().flex_col().gap(px(1.5 * rr));
+        let ticker_ws: Vec<&Value> = list(&st, &["widgets"]).iter().filter(|wd| text(wd, &["slot"]) == "ticker").collect();
         {
-            // the saved layout (~/.config/omarchy-pulse/layout.json, through the hub): a column, a place, or hidden;
-            // in NOC mode the personal panels go away
-            let draft_v = self.draft.clone().map(Value::Object);
-            let layout = draft_v.as_ref().unwrap_or_else(|| get(&st, &["layout"]));
-            self.boxes.borrow_mut().clear();
-            self.ui_boxes.borrow_mut().clear();
-            let noc_on = get(&st, &["noc", "on"]).as_bool().unwrap_or(false);
-            let noc_hide: Vec<String> = get(&st, &["ui", "nocHide"]).as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_else(|| vec!["media".into(), "notifications".into()]);
-            let mut placed: Vec<(String, f64, ui::Panel)> = Vec::new();
-            let dragging = self.drag.clone();
-            for (id, mut sl, mut order, p) in items {
-                let o = get(layout, &[id.as_str()]);
-                let hidden = get(o, &["hidden"]).as_bool().unwrap_or(false);
-                if (hidden && !editing) || (noc_on && noc_hide.contains(&id)) { continue }
-                if let Some(x) = get(o, &["slot"]).as_str().filter(|x| matches!(*x, "left" | "right" | "center")) { sl = x.to_string() }
-                if let Some(x) = num(o, &["order"]) { order = x }
-                let p = if editing {
-                    // layout edit: every panel can be picked up (left button) or hidden and shown again (right button);
-                    // a hidden recorder says where it is on the screen, so a drop knows which panel it lands before
-                    let (boxes, id_box, slot_box) = (self.boxes.clone(), id.clone(), sl.clone());
-                    let (id_down, id_hide) = (id.clone(), id.clone());
-                    let el = div().relative().border_1().border_dashed().border_color(col(if dragging.as_deref() == Some(id.as_str()) { pal.warn } else { pal.accent }, 0.7)).cursor_pointer().opacity(if hidden { 0.3 } else { 1.0 }).child(p.el)
-                        .child(canvas(move |b, _, _| { boxes.borrow_mut().insert(id_box, (slot_box, f32::from(b.origin.y), f32::from(b.size.height))); }, |_, _, _, _| ()).absolute().top_0().left_0().size_full())
-                        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _: &MouseDownEvent, _, cx| { this.drag = Some(id_down.clone()); cx.stop_propagation(); }))
-                        .on_mouse_down(MouseButton::Right, cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-                            if let Some(d) = this.draft.as_mut() {
-                                let e = d.entry(id_hide.clone()).or_insert_with(|| serde_json::json!({}));
-                                let was = e.get("hidden").and_then(Value::as_bool).unwrap_or(false);
-                                e["hidden"] = serde_json::json!(!was);
-                            }
-                            cx.stop_propagation();
-                        }));
-                    ui::Panel { id: p.id, el, h: p.h }
-                } else {
-                    // where it is on the screen, for the planes (pulse.js uiBoxes): a plane never flies hidden under a panel
-                    let rec = self.ui_boxes.clone();
-                    ui::Panel { id: p.id, el: p.el.child(canvas(move |b, _, _| rec.borrow_mut().push([f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.size.width), f32::from(b.size.height)]), |_, _, _, _| ()).absolute().top_0().left_0().size_full()), h: p.h }
-                };
-                placed.push((sl, order, p));
-            }
-            placed.sort_by(|a, b| a.1.total_cmp(&b.1));
-            let take = |sl: &str, placed: &mut Vec<(String, f64, ui::Panel)>| -> Vec<ui::Panel> {
-                let mut out = Vec::new();
-                let mut rest = Vec::new();
-                for x in placed.drain(..) {
-                    if x.0 == sl { out.push(x.2) } else { rest.push(x) }
-                }
-                *placed = rest;
-                out
-            };
-            // pulse.js fit(): a panel that does not fit in its column is hidden, never cut in half
-            for p in ui::fit(take("left", &mut placed), col_h, 1.5) { left = left.child(p.el) }
-            for p in ui::fit(take("right", &mut placed), col_h, 1.5) { right = right.child(p.el) }
-            if !simple {
-                for p in ui::fit(take("center", &mut placed), 17.7, 1.5) { centre = centre.child(p.el) }
-            }
-            if get(&st, &["focus"]).is_object() && !editing {
-                (left, right, centre) = (left.opacity(0.16), right.opacity(0.16), centre.opacity(0.16)); // a focus: the panels step back
-            } else if busy {
-                (left, right, centre) = (left.opacity(0.9), right.opacity(0.9), centre.opacity(0.9));
+            let mut d = self.hud_data.borrow_mut();
+            d.inp = Some(HudIn { st: st.clone(), pal, w, h, private, busy, simple, hub_now, t, hm: hm.clone(), sec: sec.clone(), date: date.clone() });
+            // a text panel typing, a new state, a new second, another screen: the panels are made again
+            let typing = d.typed.values().any(|(full, since)| (((t - since) / 0.04) as usize).saturating_mul(3) < full.chars().count() + 3);
+            let key = format!("{:?}|{sec}|{w}x{h}|{private}|{busy}|{simple}|{editing}", snap_at);
+            if typing || key != self.hud_key {
+                self.hud_key = key;
+                self.hud.update(cx, |_, cx| cx.notify());
             }
         }
+        let hud_el: gpui::AnyElement = if editing {
+            // layout edit: every panel can be picked up (left button) or hidden and shown again (right button); a hidden
+            // recorder says where it is on the screen, so a drop knows which panel it lands before
+            let draft_v = self.draft.clone().map(Value::Object);
+            let layout = draft_v.unwrap_or_else(|| get(&st, &["layout"]).clone());
+            self.boxes.borrow_mut().clear();
+            let dragging = self.drag.clone();
+            let boxes0 = self.boxes.clone();
+            let mut wrap = |id: String, sl: String, hidden: bool, p: ui::Panel| -> ui::Panel {
+                let (boxes, id_box, slot_box) = (boxes0.clone(), id.clone(), sl.clone());
+                let (id_down, id_hide) = (id.clone(), id.clone());
+                let el = div().relative().border_1().border_dashed().border_color(col(if dragging.as_deref() == Some(id.as_str()) { pal.warn } else { pal.accent }, 0.7)).cursor_pointer().opacity(if hidden { 0.3 } else { 1.0 }).child(p.el)
+                    .child(canvas(move |b, _, _| { boxes.borrow_mut().insert(id_box, (slot_box, f32::from(b.origin.y), f32::from(b.size.height))); }, |_, _, _, _| ()).absolute().top_0().left_0().size_full())
+                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _: &MouseDownEvent, _, cx| { this.drag = Some(id_down.clone()); cx.stop_propagation(); }))
+                    .on_mouse_down(MouseButton::Right, cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                        if let Some(d) = this.draft.as_mut() {
+                            let e = d.entry(id_hide.clone()).or_insert_with(|| serde_json::json!({}));
+                            let was = e.get("hidden").and_then(Value::as_bool).unwrap_or(false);
+                            e["hidden"] = serde_json::json!(!was);
+                        }
+                        cx.stop_propagation();
+                    }));
+                ui::Panel { id: p.id, el, h: p.h }
+            };
+            panels_el(&mut self.hud_data.borrow_mut(), &layout, true, &mut wrap).into_any_element()
+        } else {
+            self.hud.clone().cached(gpui::StyleRefinement::default().absolute().top_0().left_0().size_full()).into_any_element()
+        };
         // ---- pulse.js tickerUpdate(): your ticker panels, the alerts of the last hour, the weather, the sources
         let mut lines: Vec<(String, String)> = Vec::new();
         for wd in ticker_ws.iter() {
@@ -918,9 +860,9 @@ impl Pulse {
         }
         if simple {
             // [pulse] secondary = "simple": the scene and the clock, no panels
-            return root.child(wall_el).child(sky).child(scene_layer).child(words).child(clock_el).child(ticker_el);
+            return root.child(wall_el).child(sky).child(scene_layer).child(words).child(hud_el).child(ticker_el);
         }
-        root.child(wall_el).child(sky).child(scene_layer).child(words).child(clock_el).child(tags).child(say_el).child(centre).child(left).child(right).child(ticker_el).child(foot).child(heard_el).child(incident_el).child(digest_el).child(incoming_el).child(layout_el)
+        root.child(wall_el).child(sky).child(scene_layer).child(words).child(tags).child(say_el).child(hud_el).child(ticker_el).child(foot).child(heard_el).child(incident_el).child(digest_el).child(incoming_el).child(layout_el)
     }
 }
 
@@ -1001,6 +943,11 @@ fn args() -> Args {
             "--window" => a.window = true,
             "--url" => a.url = it.next().unwrap_or(a.url).trim_end_matches('/').to_string(),
             "--fps" => a.fps = it.next().and_then(|v| v.parse().ok()).unwrap_or(a.fps),
+            "--cpu" => {
+                if let Some(v) = it.next().and_then(|v| v.parse::<f64>().ok()) {
+                    let _ = CPU_BUDGET.set(v.clamp(3.0, 100.0));
+                }
+            }
             "--font" => a.font = it.next().unwrap_or(a.font),
             "--scene" => a.scene = it.next().unwrap_or(a.scene),
             "--version" | "-V" => {
@@ -1008,7 +955,7 @@ fn args() -> Args {
                 std::process::exit(0);
             }
             _ => {
-                println!("pulse-native {}: Omarchy Pulse, drawn natively (Rust + GPUI)\n\n  pulse-native            the wallpaper (a Wayland layer-shell surface behind your windows)\n  pulse-native --window   an ordinary window\n  --url URL   the hub (default: http://127.0.0.1:PORT from PULSE_PORT or pulse.toml)\n  --fps N     frames a second, 5 to 60 (default: the hub's [pulse] fps)\n  --font NAME the font (default: {FONT})\n  --scene S   the scene: by default the hub's own ([pulse] scene); skyline, sphere, or city (pulse-native's first world)", env!("CARGO_PKG_VERSION"));
+                println!("pulse-native {}: Omarchy Pulse, drawn natively (Rust + GPUI)\n\n  pulse-native            the wallpaper (a Wayland layer-shell surface behind your windows)\n  pulse-native --window   an ordinary window\n  --url URL   the hub (default: http://127.0.0.1:PORT from PULSE_PORT or pulse.toml)\n  --fps N     frames a second, 5 to 60 (default: the hub's [pulse] fps)\n  --cpu N     at most N% of one core (default 15; PULSE_CPU too): fewer frames a second when they cost more\n  --font NAME the font (default: {FONT})\n  --scene S   the scene: by default the hub's own ([pulse] scene); skyline, sphere, or city (pulse-native's first world)", env!("CARGO_PKG_VERSION"));
                 std::process::exit(if x == "--help" || x == "-h" { 0 } else { 2 });
             }
         }
@@ -1068,4 +1015,164 @@ fn main() {
             std::process::exit(1);
         }
     });
+}
+
+/// What the panels are made from: the hub's state and this monitor's screen, set by Pulse at every frame.
+pub struct HudIn {
+    st: Arc<Value>,
+    pal: Pal,
+    w: f32,
+    h: f32,
+    private: bool,
+    busy: bool,
+    simple: bool,
+    hub_now: f64,
+    t: f64,
+    hm: String,
+    sec: String,
+    date: String,
+}
+
+/// The panels' own memory: the text panels typing out, the camera frames, where each panel is (for the planes).
+#[derive(Default)]
+pub struct HudData {
+    inp: Option<HudIn>,
+    typed: std::collections::HashMap<String, (String, f64)>,
+    cams: std::collections::HashMap<String, (String, Arc<gpui::Image>)>,
+    ui_boxes: Rc<RefCell<Vec<[f32; 4]>>>,
+}
+
+/// The clock and the panels (pulse.css in rem). Built again only when they change: a second has passed, the hub
+/// sent a new state, a text panel is typing; between two of those GPUI reuses what it drew (a cached view), so the
+/// panels cost nothing while only the scene moves.
+fn panels_el(d: &mut HudData, layout: &Value, editing: bool, wrap: &mut dyn FnMut(String, String, bool, ui::Panel) -> ui::Panel) -> gpui::Div {
+    let Some(inp) = d.inp.as_ref() else { return div() };
+    let (st, pal, w, h, private, busy, simple, hub_now, t) = (inp.st.clone(), inp.pal, inp.w, inp.h, inp.private, inp.busy, inp.simple, inp.hub_now, inp.t);
+    let (hm, sec, date) = (inp.hm.clone(), inp.sec.clone(), inp.date.clone());
+        // ---- the panels, the clock and the ticker: pulse.css in rem, so the same layout fits every screen
+    let rr = ui::rem(w, h);
+    let uix = ui::Ui { r: rr, pal: &pal, private, now: hub_now };
+    let sec_n: f32 = sec.parse().unwrap_or(0.0);
+    let clock_el = div().absolute().top(px((3.6 + 1.2 - 0.75) * rr)).left(px(29.6 * rr)).w(px((w - 59.2 * rr).max(0.0))).flex().justify_center().child(uix.clock(&st, &hm, &sec, sec_n / 59.0, &date));
+    let mut mine: Vec<&Value> = list(&st, &["widgets"]).iter().collect();
+    mine.sort_by(|a, b| a.get("order").and_then(Value::as_f64).unwrap_or(50.0).total_cmp(&b.get("order").and_then(Value::as_f64).unwrap_or(50.0)));
+    // pulse.js render(): system and network on the left, the weather on the right, yours where they say (or,
+    // with slot "auto", images and status boards right, text in the middle, the rest where there is less)
+    let mut items: Vec<(String, String, f64, ui::Panel)> = Vec::new();
+    let ui_cfg = get(&st, &["ui"]);
+    let has_cpu = get(&st, &["sys", "cpu"]).is_number();
+    let mut order_of = std::collections::HashMap::<&str, f64>::new();
+    let mut push = |items: &mut Vec<(String, String, f64, ui::Panel)>, slot: &str, p: ui::Panel| {
+        let o = order_of.entry(if slot == "left" { "left" } else if slot == "right" { "right" } else { "center" }).or_insert(0.0);
+        items.push((p.id.clone(), slot.to_string(), *o, p));
+        *o += 10.0;
+    };
+    if has_cpu && get(ui_cfg, &["system"]).as_bool() != Some(false) {
+        push(&mut items, "left", uix.sys(&st));
+    }
+    if has_cpu && get(ui_cfg, &["network"]).as_bool() != Some(false) {
+        push(&mut items, "left", uix.net(&st));
+    }
+    if get(&st, &["weather"]).is_object() {
+        push(&mut items, "right", uix.weather(&st));
+    }
+    let (mut nl, mut nr) = (2, 1);
+    
+    for wd in mine.iter() {
+        let mut sl = text(wd, &["slot"]);
+        if sl == "ticker" {
+            continue;
+        }
+        let ty = text(wd, &["type"]);
+        if sl.is_empty() || sl == "auto" {
+            sl = if ty == "image" || ty == "status" { "right".into() } else if ty == "text" { "center".into() } else if nl <= nr { "left".into() } else { "right".into() };
+        }
+        let id = text(wd, &["id"]);
+        // a text panel types itself out again when its text changes
+        let typed = if ty == "text" || ty.is_empty() {
+            let full = text(wd, &["data", "text"]);
+            let e = d.typed.entry(id.clone()).or_insert((full.clone(), t));
+            if e.0 != full {
+                *e = (full.clone(), t);
+            }
+            Some((((t - e.1) / 0.04) as usize).saturating_mul(3))
+        } else {
+            None
+        };
+        let p = uix.generic(wd, &sl, typed, d.cams.get(&id).map(|c| c.1.clone()));
+        match sl.as_str() {
+            "left" => nl += 1,
+            "center" => {}
+            _ => { nr += 1; sl = "right".into() }
+        }
+        push(&mut items, &sl, p);
+    }
+    let col_h = h / rr - 3.6 - 3.0 - 0.8;
+    let mut left = div().absolute().left(px(2.2 * rr)).top(px((3.6 + 0.8) * rr)).w(px(25.0 * rr)).h(px(col_h * rr)).flex().flex_col().gap(px(1.5 * rr));
+    let mut right = div().absolute().right(px(2.2 * rr)).top(px((3.6 + 0.8) * rr)).w(px(25.0 * rr)).h(px(col_h * rr)).flex().flex_col().gap(px(1.5 * rr));
+    let centre_w = (w / rr - 59.2).min(46.0).max(0.0);
+    let centre_top = 3.6 + 1.2 + 8.64 + 1.9 + 1.5 + 1.8 + if text(&st, &["ui", "title"]).is_empty() { 0.0 } else { 1.6 } + 0.8 + 0.8;
+    let mut centre = div().absolute().top(px(centre_top * rr)).left(px((w / rr - centre_w) / 2.0 * rr)).w(px(centre_w * rr)).max_h(px(17.7 * rr)).overflow_hidden().flex().flex_col().gap(px(1.5 * rr));
+    {
+        // the saved layout (~/.config/omarchy-pulse/layout.json, through the hub): a column, a place, or hidden;
+        // in NOC mode the personal panels go away
+        d.ui_boxes.borrow_mut().clear();
+        let noc_on = get(&st, &["noc", "on"]).as_bool().unwrap_or(false);
+        let noc_hide: Vec<String> = get(&st, &["ui", "nocHide"]).as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_else(|| vec!["media".into(), "notifications".into()]);
+        let mut placed: Vec<(String, f64, ui::Panel)> = Vec::new();
+        for (id, mut sl, mut order, p) in items {
+            let o = get(layout, &[id.as_str()]);
+            let hidden = get(o, &["hidden"]).as_bool().unwrap_or(false);
+            if (hidden && !editing) || (noc_on && noc_hide.contains(&id)) { continue }
+            if let Some(x) = get(o, &["slot"]).as_str().filter(|x| matches!(*x, "left" | "right" | "center")) { sl = x.to_string() }
+            if let Some(x) = num(o, &["order"]) { order = x }
+            let p = if editing {
+                wrap(id.clone(), sl.clone(), hidden, p)
+            } else {
+                // where it is on the screen, for the planes (pulse.js uiBoxes): a plane never flies hidden under a panel
+                let rec = d.ui_boxes.clone();
+                ui::Panel { id: p.id, el: p.el.child(canvas(move |b, _, _| rec.borrow_mut().push([f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.size.width), f32::from(b.size.height)]), |_, _, _, _| ()).absolute().top_0().left_0().size_full()), h: p.h }
+            };
+            placed.push((sl, order, p));
+        }
+        placed.sort_by(|a, b| a.1.total_cmp(&b.1));
+        let take = |sl: &str, placed: &mut Vec<(String, f64, ui::Panel)>| -> Vec<ui::Panel> {
+            let mut out = Vec::new();
+            let mut rest = Vec::new();
+            for x in placed.drain(..) {
+                if x.0 == sl { out.push(x.2) } else { rest.push(x) }
+            }
+            *placed = rest;
+            out
+        };
+        // pulse.js fit(): a panel that does not fit in its column is hidden, never cut in half
+        for p in ui::fit(take("left", &mut placed), col_h, 1.5) { left = left.child(p.el) }
+        for p in ui::fit(take("right", &mut placed), col_h, 1.5) { right = right.child(p.el) }
+        if !simple {
+            for p in ui::fit(take("center", &mut placed), 17.7, 1.5) { centre = centre.child(p.el) }
+        }
+        if get(&st, &["focus"]).is_object() && !editing {
+            (left, right, centre) = (left.opacity(0.16), right.opacity(0.16), centre.opacity(0.16)); // a focus: the panels step back
+        } else if busy {
+            (left, right, centre) = (left.opacity(0.9), right.opacity(0.9), centre.opacity(0.9));
+        }
+    }
+    let hud = div().absolute().top_0().left_0().size_full().child(clock_el);
+    if simple {
+        return hud;
+    }
+    hud.child(centre).child(left).child(right)
+}
+
+/// The panels as a view of their own, cached: Pulse notifies it only when the panels change.
+pub struct Hud {
+    data: Rc<RefCell<HudData>>,
+}
+
+impl Render for Hud {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let mut d = self.data.borrow_mut();
+        let layout = d.inp.as_ref().map(|i| get(&i.st, &["layout"]).clone()).unwrap_or(Value::Null);
+        crate::perf::time("panels", || panels_el(&mut d, &layout, false, &mut |_, _, _, p| p))
+    }
 }

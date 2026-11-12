@@ -14,6 +14,18 @@ pub fn on() -> bool {
     ON.with(|o| *o)
 }
 
+/// Adds a time measured elsewhere.
+pub fn record(name: &'static str, ms: f64) {
+    if on() {
+        time(name, || std::thread::sleep(std::time::Duration::ZERO));
+        SUMS.with(|s| {
+            if let Some(e) = s.borrow_mut().1.get_mut(name) {
+                e.0 += ms;
+            }
+        });
+    }
+}
+
 /// Runs `f`, adding its time to `name` when measuring.
 pub fn time<R>(name: &'static str, f: impl FnOnce() -> R) -> R {
     if !on() {
@@ -37,4 +49,18 @@ pub fn time<R>(name: &'static str, f: impl FnOnce() -> R) -> R {
         }
     });
     r
+}
+
+/// Times the parts of a long function one after the other: `mark("part")` records the time since the last mark.
+pub struct Lap(Option<Instant>);
+impl Lap {
+    pub fn new() -> Self {
+        Lap(if on() { Some(Instant::now()) } else { None })
+    }
+    pub fn mark(&mut self, name: &'static str) {
+        if let Some(a) = self.0 {
+            record(name, a.elapsed().as_secs_f64() * 1000.0);
+            self.0 = Some(Instant::now());
+        }
+    }
 }

@@ -5,7 +5,7 @@
 use crate::hub::{list, num, text};
 use crate::life::Frame;
 use crate::palette::{col, mix, scale, Pal, C};
-use crate::scene::{disc, glow, gradient, rect, PlaneMark, Rand};
+use crate::scene::{glow, gradient, rect, PlaneMark, Rand};
 use gpui::{point, px, PathBuilder, Window};
 use serde_json::Value;
 
@@ -15,126 +15,7 @@ pub fn green(pal: &Pal) -> Pal {
     Pal { bg: [0.0, 0.055, 0.025], fg: g(0.85), accent: g(1.0), accent2: g(0.6), ok: g(0.9), warn: [0.75, 1.0, 0.3], crit: pal.crit, dim: g(0.32) }
 }
 
-/// `scene = "orbit"`: the planet and its rings. `rings` keeps where each moon is; it moves faster as its core works.
-pub fn orbit(win: &mut Window, st: &Value, pal: &Pal, f: &Frame, rings: &mut Vec<f32>, dt: f32, mood: &str) {
-    let r = f.h * 0.15;
-    let (cx, cy) = (f.ox + f.w / 2.0, f.oy + f.hz - r * 1.02);
-    let cores = list(st, &["sys", "cores"]);
-    let n = cores.len().min(16);
-    rings.resize(n, 0.0);
-    let tilt: f32 = -0.25;
-    let (ts, tc) = tilt.sin_cos();
-    let at = |rr: f32, ang: f32| (cx + ang.cos() * rr * tc - ang.sin() * rr * 0.28 * ts, cy + ang.cos() * rr * ts + ang.sin() * rr * 0.28 * tc);
-    let moon = |win: &mut Window, i: usize, ang: f32, front_only: bool| {
-        let v = cores[i].as_f64().unwrap_or(0.0) as f32;
-        let rr = r * (1.25 + i as f32 * 0.09);
-        let front = ang.sin() > 0.0;
-        if front != front_only {
-            return;
-        }
-        let (x, y) = at(rr, ang);
-        let c = if v > 85.0 { pal.crit } else if front { pal.accent } else { pal.accent2 };
-        let s = (f.h / 300.0).max(1.5) * if front { 1.4 } else { 0.9 };
-        if front {
-            glow(win, x, y, s * 3.0, c, 0.5);
-        }
-        disc(win, x, y, s, c, if front { 0.95 } else { 0.4 });
-    };
-    for i in 0..n {
-        let v = cores[i].as_f64().unwrap_or(0.0) as f32;
-        if rings[i] == 0.0 {
-            rings[i] = i as f32 * 1.7 + 0.01;
-        }
-        rings[i] += (0.1 + v / 160.0) * dt;
-        let rr = r * (1.25 + i as f32 * 0.09);
-        let mut ring = PathBuilder::stroke(px((f.u * 1.0).max(1.0)));
-        for k in 0..=64 {
-            let (x, y) = at(rr, k as f32 / 64.0 * std::f32::consts::TAU);
-            if k == 0 { ring.move_to(point(px(x), px(y))) } else { ring.line_to(point(px(x), px(y))) }
-        }
-        if let Ok(p) = ring.build() {
-            win.paint_path(p, col(pal.accent, 0.12 + v / 400.0));
-        }
-        moon(win, i, rings[i], false); // the moons behind the planet first
-    }
-    // the planet: lit from one side, a band of weather, its face
-    glow(win, cx, cy, r * 2.2, pal.accent2, 0.30);
-    disc(win, cx, cy, r, mix(pal.bg, pal.accent2, 0.42), 1.0);
-    disc(win, cx - r * 0.18, cy - r * 0.18, r * 0.78, mix(pal.bg, pal.accent2, 0.55), 0.55);
-    disc(win, cx - r * 0.32, cy - r * 0.32, r * 0.5, mix(pal.accent2, pal.fg, 0.25), 0.22);
-    for k in 0..5 {
-        let y = cy - r * 0.55 + k as f32 * r * 0.27;
-        let half = (r * r - (y - cy) * (y - cy)).max(0.0).sqrt();
-        rect(win, cx - half, y, half * 2.0, r * 0.045, pal.accent, 0.10 + 0.05 * ((f.t * 0.3 + k as f32).sin()));
-    }
-    let face = |x: f32, y: f32| crate::scene::face_lit(x, y, mood, f.t);
-    let step = r * 0.035;
-    let mut y = -1.0;
-    while y <= 1.0 {
-        let mut x = -1.0;
-        while x <= 1.0 {
-            if x * x + y * y < 0.95 && face(x / 0.9, y / 0.9) {
-                rect(win, cx + x * r * 0.9 - step * 0.55, cy + y * r * 0.9 - step * 0.55, step * 1.1, step * 1.1, pal.fg, 0.95);
-            }
-            x += 0.04;
-        }
-        y += 0.04;
-    }
-    for i in 0..n {
-        moon(win, i, rings[i], true); // and the ones in front of it
-    }
-}
 
-/// `scene = "hacker"`: the radar. Every device of your network is a blip; it brightens as the sweep passes over it.
-pub fn radar(win: &mut Window, st: &Value, pal: &Pal, f: &Frame, marks: &mut Vec<PlaneMark>, private: bool) {
-    let r = f.h * 0.23;
-    let (cx, cy) = (f.ox + f.w / 2.0, f.oy + f.hz - r * 0.95);
-    let sweep = f.t * 0.9;
-    let g = pal.accent;
-    disc(win, cx, cy, r, pal.bg, 0.55);
-    let mut lines = PathBuilder::stroke(px((f.u * 1.0).max(1.0)));
-    for k in 1..=4 {
-        for i in 0..=72 {
-            let a = i as f32 / 72.0 * std::f32::consts::TAU;
-            let p = point(px(cx + a.cos() * r * k as f32 / 4.0), px(cy + a.sin() * r * k as f32 / 4.0));
-            if i == 0 { lines.move_to(p) } else { lines.line_to(p) }
-        }
-    }
-    lines.move_to(point(px(cx - r), px(cy)));
-    lines.line_to(point(px(cx + r), px(cy)));
-    lines.move_to(point(px(cx), px(cy - r)));
-    lines.line_to(point(px(cx), px(cy + r)));
-    if let Ok(p) = lines.build() {
-        win.paint_path(p, col(g, 0.35));
-    }
-    for k in 0..24 {
-        let a = sweep - k as f32 * 0.03;
-        let mut l = PathBuilder::stroke(px((f.u * 1.6).max(1.0)));
-        l.move_to(point(px(cx), px(cy)));
-        l.line_to(point(px(cx + a.cos() * r), px(cy + a.sin() * r)));
-        if let Ok(p) = l.build() {
-            win.paint_path(p, col(g, 0.5 * (1.0 - k as f32 / 24.0)));
-        }
-    }
-    let tau = std::f32::consts::TAU;
-    for (i, d) in list(st, &["lan"]).iter().take(40).enumerate() {
-        let name = text(d, &["name"]);
-        let key = if name.is_empty() { text(d, &["ip"]) } else { name.clone() };
-        let hs = key.bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
-        let ang = ((if hs == 0 { i as u32 * 977 } else { hs }) % 628) as f32 / 100.0;
-        let rad = 0.5 + 0.4 * ((key.len() % 7) as f32) / 7.0;
-        let (x, y) = (cx + ang.cos() * r * rad, cy + ang.sin() * r * rad);
-        let since = (sweep - ang).rem_euclid(tau);
-        let lum = (1.0 - since / 4.0).max(0.15);
-        let is_new = d.get("new").and_then(Value::as_bool).unwrap_or(false);
-        let c = if is_new { pal.warn } else { g };
-        glow(win, x, y, f.h * 0.012, c, 0.6 * lum);
-        disc(win, x, y, (f.u * 3.0).max(1.5), c, lum);
-        if !private && lum > 0.45 && !name.is_empty() {
-            marks.push(PlaneMark { c, x: (x - f.ox + f.u * 8.0).clamp(f.w * 0.245, f.w * 0.70), y: y - f.oy - f.u * 8.0, title: name.chars().take(14).collect(), line: String::new() });
-        }
-    }
-}
 
 /// `scene = "noir"`: the megacity's own sky and street (its colours are its own, as on the web page).
 pub fn noir_sky(win: &mut Window, f: &Frame) {

@@ -4,7 +4,7 @@ A parallel renderer for Omarchy Pulse. The web page stays the default (and is wh
 paints the same wallpaper natively on the GPU, with no browser underneath. It reads the same hub: the same
 `omarchy-pulse` service, the same token and the same `pulse.toml`.
 
-**Status: 0.12, experimental.** The port is being redone as a line-by-line translation of the published web page,
+**Status: 0.13, experimental.** The port is being redone as a line-by-line translation of the published web page,
 so that it looks and moves as Pulse 1.8 does. Translated so far: the panels, the clock and the ticker (pulse.css in
 rem: the same layout on every screen, at its full resolution), INCOMING and the effect text, the sphere (texture,
 face, programmes, gaze, LED map), the far city and the skyline of where you live, the clouds, the planes (which go
@@ -16,12 +16,17 @@ sky (the real Sun and its eclipses, the real stars and constellations, the plane
 eclipses, meteor showers, shooting stars, the aurora of your network); and in 0.12 what passes over you (a real
 launch with its booster and its tag, Starlink, the ISS, the fireworks), the weather (rain with depth and its rings,
 snow, hail, fog) and the life of the city (the calendar's trains, the robots, the candles of what expires, the
-datacenter's halls, the banner plane, the balloon with a tip or the news). The events, Pulse Net and the other
-scenes are next.
+datacenter's halls, the banner plane, the balloon with a tip or the news); and in 0.13 the core of the other scenes
+(the wireframe sphere of skyline, calm and hacker, the planet of orbit with a moon for every core, the face in it,
+the ring of a focus) and the hacker scene's radar. The neo-noir scene is still the earlier drawing.
 
-**CPU**: every letter on the sphere is drawn once and kept, gradients are small pictures kept on the GPU, the state
-is shared instead of copied, and a PC that cannot keep up gets fewer frames (pulse.js's cap: 70% of the frames,
-full speed again a minute later). `--fps N` (or `[pulse] fps`) sets the most; `motion = "reduced"` draws 4 a
+**CPU**: the panels are a view of their own, made again only when they change (a new state, a new second, a text
+typing out) and otherwise drawn again from what GPUI kept; the sphere gets a new picture 15 times a second; every
+letter on the sphere is drawn once and kept; gradients are small pictures kept on the GPU, their colours in 32
+steps so they stay few; the state is shared instead of copied. A frame that costs more than half its time lowers
+the frame rate as pulse.js does, and the wallpaper keeps under a CPU budget: `--cpu N` (or `PULSE_CPU`) is the
+most of one core it may use, 15% by default; the frames a second come down until a second of frames costs no
+more than that (never under 8). `--fps N` (or `[pulse] fps`) sets the most; `motion = "reduced"` draws 4 a
 second. `PULSE_PERF=1` prints what each part of a frame costs.
 
 What it draws, from the same state the web page reads:
@@ -71,11 +76,8 @@ Still different from the web page:
 
 - community scenes written in JavaScript by other people cannot run here (there is no JavaScript engine): they show
   the skyline and say so. The three that come with Pulse (mars, monolith, pond) are written again in Rust;
-- the sphere is a ball of LEDs with its programmes as words, not the web page's painted texture; the doorbell's
-  picture on the sphere is missing;
-- in layout edit a hidden panel comes back with Reset only;
-- the light of the Sun on the towers and the floor is written from pulse.js but was looked at only under the
-  demo's rain: check it on a clear day.
+- the neo-noir scene (`noir`) is still pulse-native's own drawing of it;
+- in layout edit the right button hides a panel and shows it again (the web page has a × on it);
 
 What the hub does is unchanged, because it is the same hub: sources, alerts, AI, the voice, lights and WLED, the
 phone, the crew, the day's video, Wrapped, the scene editor.
