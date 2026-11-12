@@ -20,6 +20,7 @@ mod modes;
 mod palette;
 mod picture;
 mod scene;
+mod ui;
 mod sound;
 mod worlds;
 
@@ -82,6 +83,8 @@ struct Pulse {
     draft: Option<serde_json::Map<String, Value>>,
     drag: Option<String>,
     boxes: Rc<RefCell<std::collections::HashMap<String, (String, f32, f32)>>>,
+    /// text panels: the text and when it started to be typed out
+    typed: std::collections::HashMap<String, (String, f64)>,
 }
 
 impl Pulse {
@@ -108,7 +111,7 @@ impl Pulse {
         })
         .detach();
         let world = scene::World::new();
-        Pulse { hub, live, forced: !scene.is_empty(), scene, city: Rc::new(RefCell::new(city::World::new())), world: Rc::new(RefCell::new(world)), marks: Rc::new(RefCell::new(Vec::new())), mem: Rc::new(RefCell::new(design::Mem::default())), drawn: Rc::new(RefCell::new((Vec::new(), Vec::new()))), assets: (String::new(), Default::default()), reacted: 0.0, started: Instant::now(), font: font.into(), base, primary, monkey, origin: (0.0, 0.0), sound: sound::Sound::new(), wallpaper: (String::new(), None, None), cover: (String::new(), None), seen_alert: -1, incoming: None, seen_digest: 0, digest: None, ack: None, last_cursor: None, sounded: 0.0, cams: Default::default(), raw_assets: Default::default(), tinted: Default::default(), draft: None, drag: None, boxes: Default::default() }
+        Pulse { hub, live, forced: !scene.is_empty(), scene, city: Rc::new(RefCell::new(city::World::new())), world: Rc::new(RefCell::new(world)), marks: Rc::new(RefCell::new(Vec::new())), mem: Rc::new(RefCell::new(design::Mem::default())), drawn: Rc::new(RefCell::new((Vec::new(), Vec::new()))), assets: (String::new(), Default::default()), reacted: 0.0, started: Instant::now(), font: font.into(), base, primary, monkey, origin: (0.0, 0.0), sound: sound::Sound::new(), wallpaper: (String::new(), None, None), cover: (String::new(), None), seen_alert: -1, incoming: None, seen_digest: 0, digest: None, ack: None, last_cursor: None, sounded: 0.0, cams: Default::default(), raw_assets: Default::default(), tinted: Default::default(), draft: None, drag: None, boxes: Default::default(), typed: Default::default() }
     }
 
     /// A click on the wallpaper: a storm over a failing panel (twice: acknowledge it), or something of the scene,
@@ -237,7 +240,7 @@ fn clock(st: &Value) -> (String, String, String) {
 }
 
 /// The local time's offset, from libc (the TZ the session runs in); 0 if it can't be read.
-fn local_offset_secs() -> i64 {
+pub fn local_offset_secs() -> i64 {
     unsafe {
         let now = libc_time();
         let mut tm: Tm = std::mem::zeroed();
@@ -678,179 +681,72 @@ impl Render for Pulse {
         let heart = num(&st, &["heart"]).filter(|v| *v > 0.0).map(|v| format!(" · ♥ {v:.0}")).unwrap_or_default();
         let title = { let x = text(&st, &["ui", "title"]); if x.is_empty() { String::new() } else { format!("   {x}") } };
         let who = if user.is_empty() { "pulse-native".to_string() } else { format!("{user}@{host} · {theme}{upt}{heart}{title}") };
-        let date = date.chars().map(|c| c.to_string()).collect::<Vec<_>>().join(" ");
-        let clock_el = div()
-            .absolute()
-            .top(px(h * 0.062))
-            .left(px(0.0))
-            .w(px(w))
-            .flex()
-            .flex_col()
-            .items_center()
-            .child(
-                div()
-                    .flex()
-                    .items_start()
-                    .child(div().text_size(px(150.0 * u)).line_height(px(150.0 * u)).font_weight(FontWeight::LIGHT).text_color(col(mix(pal.fg, [1.0, 1.0, 1.0], 0.6), 1.0)).child(hm))
-                    .child(div().mt(px(14.0 * u)).ml(px(8.0 * u)).text_size(px(30.0 * u)).text_color(col(pal.accent, 1.0)).child(sec)),
-            )
-            .child(div().mt(px(10.0 * u)).w(px(260.0 * u)).h(px(2.0 * u)).bg(col(pal.accent, 0.8)))
-            .child(div().mt(px(14.0 * u)).text_size(px(19.0 * u)).text_color(col(pal.accent, 1.0)).child(date))
-            .child(div().mt(px(8.0 * u)).text_size(px(14.0 * u)).text_color(col(pal.fg, 0.75)).child(who))
-            .child(match (num(&st, &["focus", "start"]), num(&st, &["focus", "until"])) {
-                (Some(a), Some(b)) if b > a => {
-                    let now = num(&st, &["t"]).unwrap_or(a);
-                    let left = (b - now).max(0.0) as i64;
-                    let done = (((now - a) / (b - a)) as f32).clamp(0.0, 1.0);
-                    div().mt(px(10.0 * u)).flex().flex_col().items_center().gap(px(5.0 * u))
-                        .child(div().text_size(px(15.0 * u)).text_color(col(pal.ok, 1.0)).child({ let lb = text(&st, &["focus", "label"]); if lb.is_empty() { format!("FOCUS · {:02}:{:02} left", left / 60, left % 60) } else { format!("FOCUS · {lb} · {:02}:{:02} left", left / 60, left % 60) } }))
-                        .child(div().w(px(260.0 * u)).h(px(4.0 * u)).bg(col(pal.dim, 0.4)).child(div().h_full().w(gpui::relative(done)).bg(col(pal.ok, 0.95))))
-                }
-                _ if get(&st, &["meeting"]).as_bool().unwrap_or(false) => div().mt(px(10.0 * u)).text_size(px(15.0 * u)).text_color(col(pal.warn, 1.0)).child("in a meeting · effects are quiet"),
-                _ if get(&st, &["away"]).as_bool().unwrap_or(false) => div().mt(px(10.0 * u)).text_size(px(15.0 * u)).text_color(col(pal.dim, 1.0)).child("away"),
-                _ => div(),
-            });
-
-        // ---- system and network, on the left (as the web page's own panels)
-        let cpu = num(&st, &["sys", "cpu"]).unwrap_or(0.0) as f32;
-        let ram = num(&st, &["sys", "ram"]).unwrap_or(0.0) as f32;
-        let temp = num(&st, &["sys", "temp"]).unwrap_or(0.0) as f32;
-        let disk = num(&st, &["sys", "disk"]).unwrap_or(0.0) as f32;
-        let cores = list(&st, &["sys", "cores"]);
-        let mut core_row = div().flex().gap(px(2.0 * u)).h(px(34.0 * u)).items_end();
-        for c in cores.iter().take(32) {
-            let v = (c.as_f64().unwrap_or(0.0) as f32 / 100.0).clamp(0.02, 1.0);
-            core_row = core_row.child(div().flex_1().h(gpui::relative(v)).bg(col(mix(pal.accent, pal.accent2, v), 0.9)));
-        }
-        let mut system = panel("system", &pal, u)
-            .child(
-                div()
-                    .flex()
-                    .items_end()
-                    .gap(px(8.0 * u))
-                    .child(div().text_size(px(46.0 * u)).line_height(px(48.0 * u)).font_weight(FontWeight::BOLD).text_color(col(heat(cpu / 100.0), 1.0)).child(format!("{cpu:.0}")))
-                    .child(div().pb(px(6.0 * u)).text_color(col(pal.accent, 1.0)).child("% cpu")),
-            )
-            .child({
-                let hist: Vec<f32> = list(&st, &["hist", "cpu"]).iter().filter_map(|x| x.as_f64().map(|v| v as f32)).collect();
-                if hist.len() > 2 { div().child(spark(hist, pal.accent, u)) } else { div() }
-            })
-            .child(core_row)
-            .child(meter("ram", ram / 100.0, format!("{ram:.0}%"), heat(ram / 100.0), &pal, u))
-            .child(meter("temp", (temp - 30.0) / 65.0, format!("{temp:.0}°C"), heat((temp - 30.0) / 65.0), &pal, u))
-            .child(meter("disk", disk / 100.0, format!("{disk:.0}%"), heat(disk / 100.0), &pal, u));
-        if let Some(bat) = num(&st, &["sys", "bat"]) {
-            system = system.child(meter("bat", bat as f32 / 100.0, format!("{bat:.0}%"), if bat < 20.0 { pal.crit } else { pal.ok }, &pal, u));
-        }
-        let network = panel("network", &pal, u)
-            .child(div().flex().justify_between().child(div().text_color(col(pal.dim, 1.0)).child("↓ down")).child(div().text_color(col(pal.fg, 1.0)).child(bytes(num(&st, &["sys", "rx"]).unwrap_or(0.0)))))
-            .child(div().flex().justify_between().child(div().text_color(col(pal.dim, 1.0)).child("↑ up")).child(div().text_color(col(pal.fg, 1.0)).child(bytes(num(&st, &["sys", "tx"]).unwrap_or(0.0)))))
-            .child(div().text_color(col(pal.dim, 1.0)).child(if private { "•••".to_string() } else { text(&st, &["sys", "ip"]) }));
-        let now = num(&st, &["t"]).unwrap_or(0.0);
+        // ---- the panels, the clock and the ticker: pulse.css in rem, so the same layout fits every screen
+        let rr = ui::rem(w, h);
+        let uix = ui::Ui { r: rr, pal: &pal, private, now: hub_now };
+        let sec_n: f32 = sec.parse().unwrap_or(0.0);
+        let clock_el = div().absolute().top(px((3.6 + 1.2 - 0.75) * rr)).left(px(29.6 * rr)).w(px((w - 59.2 * rr).max(0.0))).flex().justify_center().child(uix.clock(&st, &hm, &sec, sec_n / 59.0, &date));
+        let now = hub_now;
         let mut mine: Vec<&Value> = list(&st, &["widgets"]).iter().collect();
         mine.sort_by(|a, b| a.get("order").and_then(Value::as_f64).unwrap_or(50.0).total_cmp(&b.get("order").and_then(Value::as_f64).unwrap_or(50.0)));
-        let slot = |w: &Value| w.get("slot").and_then(Value::as_str).unwrap_or("right").to_string();
-        let col_w = 396.0 * u;
-        // every panel with its id, its column and its place: yours can move them (omarchy-pulse layout edit)
-        let mut items: Vec<(String, String, f64, gpui::Div)> = Vec::new();
-        if get(&st, &["ui", "system"]).as_bool().unwrap_or(true) {
-            items.push(("sys".into(), "left".into(), 0.0, system));
+        // pulse.js render(): system and network on the left, the weather on the right, yours where they say (or,
+        // with slot "auto", images and status boards right, text in the middle, the rest where there is less)
+        let mut items: Vec<(String, String, f64, ui::Panel)> = Vec::new();
+        let ui_cfg = get(&st, &["ui"]);
+        let has_cpu = get(&st, &["sys", "cpu"]).is_number();
+        let mut order_of = std::collections::HashMap::<&str, f64>::new();
+        let mut push = |items: &mut Vec<(String, String, f64, ui::Panel)>, slot: &str, p: ui::Panel| {
+            let o = order_of.entry(if slot == "left" { "left" } else if slot == "right" { "right" } else { "center" }).or_insert(0.0);
+            items.push((p.id.clone(), slot.to_string(), *o, p));
+            *o += 10.0;
+        };
+        if has_cpu && get(ui_cfg, &["system"]).as_bool() != Some(false) {
+            push(&mut items, "left", uix.sys(&st));
         }
-        if get(&st, &["ui", "network"]).as_bool().unwrap_or(true) {
-            items.push(("net".into(), "left".into(), 10.0, network));
+        if has_cpu && get(ui_cfg, &["network"]).as_bool() != Some(false) {
+            push(&mut items, "left", uix.net(&st));
         }
-        let mut left = div().absolute().left(px(36.0 * u)).top(px(72.0 * u)).w(px(col_w)).flex().flex_col().gap(px(24.0 * u));
-
-        // ---- weather and the AI agents, on the right
-        let mut right = div().absolute().right(px(36.0 * u)).top(px(72.0 * u)).w(px(col_w)).flex().flex_col().gap(px(24.0 * u));
-        if get(&st, &["weather", "temp"]).is_number() {
-            let unit = text(&st, &["weather", "unit"]);
-            let wunit = text(&st, &["weather", "windUnit"]);
-            let tmp = num(&st, &["weather", "temp"]).unwrap_or(0.0);
-            let weather_panel = (
-                panel(&format!("weather · {}", text(&st, &["weather", "city"])), &pal, u)
-                    .child(
-                        div()
-                            .flex()
-                            .items_end()
-                            .gap(px(8.0 * u))
-                            .child(div().text_size(px(46.0 * u)).line_height(px(48.0 * u)).font_weight(FontWeight::BOLD).text_color(col(pal.fg, 1.0)).child(format!("{tmp:.0}")))
-                            .child(div().pb(px(6.0 * u)).text_color(col(pal.accent, 1.0)).child(unit.clone()))
-                            .child(div().pb(px(6.0 * u)).ml(px(8.0 * u)).text_color(col(pal.accent, 1.0)).child(weather_word(num(&st, &["weather", "code"]).unwrap_or(0.0) as i32))),
-                    )
-                    .child(div().flex().justify_between().text_color(col(pal.dim, 1.0)).child(format!("feels {:.0}°", num(&st, &["weather", "feels"]).unwrap_or(tmp))).child(format!(
-                        "↑{:.0}° ↓{:.0}°",
-                        num(&st, &["weather", "hi"]).unwrap_or(tmp),
-                        num(&st, &["weather", "lo"]).unwrap_or(tmp)
-                    )))
-                    .child(div().flex().justify_between().text_color(col(pal.dim, 1.0)).child(format!("wind {:.0} {wunit}", num(&st, &["weather", "wind"]).unwrap_or(0.0))).child(format!(
-                        "clouds {:.0}%",
-                        num(&st, &["weather", "cloud"]).unwrap_or(0.0)
-                    )))
-                    .child({
-                        // the next hours: a bar each, as tall as the chance of rain, the hour under it
-                        let hours = list(&st, &["weather", "hours"]);
-                        let mut row = div().flex().items_end().gap(px(2.0 * u)).h(px(52.0 * u));
-                        for hr in hours.iter().take(12) {
-                            let p = (hr.get("p").and_then(Value::as_f64).unwrap_or(0.0) as f32 / 100.0).clamp(0.0, 1.0);
-                            row = row.child(
-                                div().flex_1().h_full().flex().flex_col().justify_end().items_center().gap(px(2.0 * u))
-                                    .child(div().w_full().h(px((4.0 + 30.0 * p) * u)).bg(col(mix(pal.accent, pal.accent2, p), 0.9)))
-                                    .child(div().text_size(px(9.5 * u)).text_color(col(pal.dim, 1.0)).child(hr.get("h").and_then(Value::as_str).unwrap_or("").to_string())),
-                            );
-                        }
-                        if hours.is_empty() { div() } else { row }
-                    })
-                    .child(div().flex().justify_between().text_size(px(12.5 * u)).text_color(col(pal.dim, 1.0)).child(format!("☀ {}", text(&st, &["weather", "sunrise"]))).child(match num(&st, &["air", "aqi"]) {
-                        Some(aqi) => format!("air {aqi:.0}"),
-                        None => format!("hum {:.0}%", num(&st, &["weather", "hum"]).unwrap_or(0.0)),
-                    }).child(format!("☾ {}", text(&st, &["weather", "sunset"]))))
-                    .child(match (num(&st, &["air", "aqi"]), text(&st, &["air", "level"]), text(&st, &["air", "pollen"])) {
-                        // the air you breathe, under the hours
-                        (Some(aqi), level, pollen) => div().flex().justify_between().text_size(px(12.5 * u)).text_color(col(pal.dim, 1.0)).child(div().flex().gap(px(5.0 * u)).child("air").child(div().text_color(col(match level.as_str() { "good" | "fair" => pal.ok, "moderate" => pal.warn, _ => pal.crit }, 1.0)).child(level.clone())).child(format!("· {aqi:.0}"))).child(if pollen.is_empty() { "no pollen".to_string() } else { format!("{pollen} pollen {}", text(&st, &["air", "pollenLevel"])) }),
-                        _ => div(),
-                    }),
-            );
-            items.push(("weather".into(), "right".into(), 0.0, weather_panel.0));
+        if get(&st, &["weather"]).is_object() {
+            push(&mut items, "right", uix.weather(&st));
         }
-        {
-            let mut counts = std::collections::HashMap::<String, f64>::new();
-            for wd in mine.iter() {
-                let sl = slot(wd);
-                if !matches!(sl.as_str(), "left" | "right" | "center") { continue }
-                let n = counts.entry(sl.clone()).or_insert(if sl == "left" { 20.0 } else if sl == "right" { 10.0 } else { 0.0 });
-                items.push((text(wd, &["id"]), sl, *n, widget(wd, &pal, u, now, 4, private, &self.base, self.cams.get(&text(wd, &["id"])).map(|c| c.1.clone()))));
-                *n += 10.0;
+        let (mut nl, mut nr) = (2, 1);
+        let mut ticker_ws: Vec<&Value> = Vec::new();
+        for wd in mine.iter() {
+            let mut sl = text(wd, &["slot"]);
+            if sl == "ticker" {
+                ticker_ws.push(wd);
+                continue;
             }
-        }
-        if scene_name == "city" {
-            let agents = list(&st, &["agents"]);
-            if !agents.is_empty() {
-                let mut p = panel("agents", &pal, u);
-                for a in agents.iter().take(6) {
-                    let state = a.get("state").and_then(Value::as_str).unwrap_or("");
-                    let c = match state {
-                        "working" => pal.accent,
-                        "waiting" => pal.warn,
-                        "done" => pal.ok,
-                        "failed" => pal.crit,
-                        _ => pal.dim,
-                    };
-                    p = p.child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.0 * u))
-                            .child(div().size(px(8.0 * u)).rounded_full().bg(col(c, 1.0)))
-                            .child(div().flex_1().text_color(col(pal.fg, 1.0)).child(a.get("name").and_then(Value::as_str).unwrap_or("agent").to_string()))
-                            .child(div().text_color(col(c, 1.0)).child(state.to_string())),
-                    );
+            let ty = text(wd, &["type"]);
+            if sl.is_empty() || sl == "auto" {
+                sl = if ty == "image" || ty == "status" { "right".into() } else if ty == "text" { "center".into() } else if nl <= nr { "left".into() } else { "right".into() };
+            }
+            let id = text(wd, &["id"]);
+            // a text panel types itself out again when its text changes
+            let typed = if ty == "text" || ty.is_empty() {
+                let full = text(wd, &["data", "text"]);
+                let e = self.typed.entry(id.clone()).or_insert((full.clone(), t));
+                if e.0 != full {
+                    *e = (full.clone(), t);
                 }
-                right = right.child(p);
+                Some((((t - e.1) / 0.04) as usize).saturating_mul(3))
+            } else {
+                None
+            };
+            let p = uix.generic(wd, &sl, typed, self.cams.get(&id).map(|c| c.1.clone()));
+            match sl.as_str() {
+                "left" => nl += 1,
+                "center" => {}
+                _ => { nr += 1; sl = "right".into() }
             }
+            push(&mut items, &sl, p);
         }
-        // ---- the centre: your first centre panel, under the clock (the AI brief, on the web page)
-        let mut centre = div().absolute().top(px(h * 0.325)).left(px(w * 0.31)).w(px(w * 0.38)).flex().flex_col().gap(px(20.0 * u));
+        let col_h = h / rr - 3.6 - 3.0 - 0.8;
+        let mut left = div().absolute().left(px(2.2 * rr)).top(px((3.6 + 0.8) * rr)).w(px(25.0 * rr)).h(px(col_h * rr)).flex().flex_col().gap(px(1.5 * rr));
+        let mut right = div().absolute().right(px(2.2 * rr)).top(px((3.6 + 0.8) * rr)).w(px(25.0 * rr)).h(px(col_h * rr)).flex().flex_col().gap(px(1.5 * rr));
+        let centre_w = (w / rr - 59.2).min(46.0).max(0.0);
+        let centre_top = 3.6 + 1.2 + 8.64 + 1.9 + 1.5 + 1.8 + if text(&st, &["ui", "title"]).is_empty() { 0.0 } else { 1.6 } + 0.8 + 0.8;
+        let mut centre = div().absolute().top(px(centre_top * rr)).left(px((w / rr - centre_w) / 2.0 * rr)).w(px(centre_w * rr)).max_h(px(17.7 * rr)).overflow_hidden().flex().flex_col().gap(px(1.5 * rr));
         {
             // the saved layout (~/.config/omarchy-pulse/layout.json, through the hub): a column, a place, or hidden;
             // in NOC mode the personal panels go away
@@ -859,84 +755,100 @@ impl Render for Pulse {
             self.boxes.borrow_mut().clear();
             let noc_on = get(&st, &["noc", "on"]).as_bool().unwrap_or(false);
             let noc_hide: Vec<String> = get(&st, &["ui", "nocHide"]).as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_else(|| vec!["media".into(), "notifications".into()]);
-            let mut placed: Vec<(String, f64, gpui::Div)> = Vec::new();
+            let mut placed: Vec<(String, f64, ui::Panel)> = Vec::new();
             let dragging = self.drag.clone();
-            for (id, mut sl, mut order, el) in items {
+            for (id, mut sl, mut order, p) in items {
                 let o = get(layout, &[id.as_str()]);
-                if get(o, &["hidden"]).as_bool().unwrap_or(false) || (noc_on && noc_hide.contains(&id)) { continue }
+                let hidden = get(o, &["hidden"]).as_bool().unwrap_or(false);
+                if (hidden && !editing) || (noc_on && noc_hide.contains(&id)) { continue }
                 if let Some(x) = get(o, &["slot"]).as_str().filter(|x| matches!(*x, "left" | "right" | "center")) { sl = x.to_string() }
                 if let Some(x) = num(o, &["order"]) { order = x }
-                let el = if editing {
-                    // layout edit: every panel can be picked up (left button) or hidden (right button); a hidden recorder
-                    // says where it is on the screen, so a drop knows which panel it lands before
+                let p = if editing {
+                    // layout edit: every panel can be picked up (left button) or hidden and shown again (right button);
+                    // a hidden recorder says where it is on the screen, so a drop knows which panel it lands before
                     let (boxes, id_box, slot_box) = (self.boxes.clone(), id.clone(), sl.clone());
                     let (id_down, id_hide) = (id.clone(), id.clone());
-                    div().relative().border_1().border_color(col(if dragging.as_deref() == Some(id.as_str()) { pal.warn } else { pal.accent2 }, 0.9)).cursor_pointer().child(el)
+                    let el = div().relative().border_1().border_dashed().border_color(col(if dragging.as_deref() == Some(id.as_str()) { pal.warn } else { pal.accent }, 0.7)).cursor_pointer().opacity(if hidden { 0.3 } else { 1.0 }).child(p.el)
                         .child(canvas(move |b, _, _| { boxes.borrow_mut().insert(id_box, (slot_box, f32::from(b.origin.y), f32::from(b.size.height))); }, |_, _, _, _| ()).absolute().size_full())
                         .on_mouse_down(MouseButton::Left, cx.listener(move |this, _: &MouseDownEvent, _, cx| { this.drag = Some(id_down.clone()); cx.stop_propagation(); }))
                         .on_mouse_down(MouseButton::Right, cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-                            if let Some(d) = this.draft.as_mut() { d.entry(id_hide.clone()).or_insert_with(|| serde_json::json!({}))["hidden"] = serde_json::json!(true) }
+                            if let Some(d) = this.draft.as_mut() {
+                                let e = d.entry(id_hide.clone()).or_insert_with(|| serde_json::json!({}));
+                                let was = e.get("hidden").and_then(Value::as_bool).unwrap_or(false);
+                                e["hidden"] = serde_json::json!(!was);
+                            }
                             cx.stop_propagation();
-                        }))
+                        }));
+                    ui::Panel { id: p.id, el, h: p.h }
                 } else {
-                    el
+                    p
                 };
-                placed.push((sl, order, el));
+                placed.push((sl, order, p));
             }
             placed.sort_by(|a, b| a.1.total_cmp(&b.1));
-            let (mut nl, mut nr, mut nc) = (0, 0, 0);
-            for (sl, _, el) in placed {
-                match sl.as_str() {
-                    "left" if nl < 5 => { nl += 1; left = left.child(el) }
-                    "right" if nr < 4 => { nr += 1; right = right.child(el) }
-                    "center" if nc < 2 && !simple => { nc += 1; centre = centre.child(el) }
-                    _ => {}
+            let take = |sl: &str, placed: &mut Vec<(String, f64, ui::Panel)>| -> Vec<ui::Panel> {
+                let mut out = Vec::new();
+                let mut rest = Vec::new();
+                for x in placed.drain(..) {
+                    if x.0 == sl { out.push(x.2) } else { rest.push(x) }
                 }
+                *placed = rest;
+                out
+            };
+            // pulse.js fit(): a panel that does not fit in its column is hidden, never cut in half
+            for p in ui::fit(take("left", &mut placed), col_h, 1.5) { left = left.child(p.el) }
+            for p in ui::fit(take("right", &mut placed), col_h, 1.5) { right = right.child(p.el) }
+            if !simple {
+                for p in ui::fit(take("center", &mut placed), 17.7, 1.5) { centre = centre.child(p.el) }
             }
             if get(&st, &["focus"]).is_object() && !editing {
                 (left, right, centre) = (left.opacity(0.16), right.opacity(0.16), centre.opacity(0.16)); // a focus: the panels step back
             } else if busy {
                 (left, right, centre) = (left.opacity(0.9), right.opacity(0.9), centre.opacity(0.9));
             }
-            if !editing {
-                centre = centre.max_h(px(296.0 * u)).overflow_hidden(); // as the web page: the middle column never covers the scene
-            }
         }
-        // ---- the line at the bottom: the next launch, as the web page's ticker says it
-        let mut lines: Vec<String> = Vec::new();
-        for wd in mine.iter().filter(|w| slot(w) == "ticker") {
-            for it in get(wd, &["data", "items"]).as_array().map(|a| a.as_slice()).unwrap_or(&[]).iter().take(8) {
-                let (a, b) = (text(it, &["title"]), text(it, &["text"]));
-                if !a.is_empty() {
-                    lines.push(if b.is_empty() { a } else { format!("{a} · {b}") });
+        // ---- pulse.js tickerUpdate(): your ticker panels, the alerts of the last hour, the weather, the sources
+        let mut lines: Vec<(String, String)> = Vec::new();
+        for wd in ticker_ws.iter() {
+            let d = get(wd, &["data"]);
+            let (title, id) = (text(wd, &["title"]), text(wd, &["id"]));
+            if let Some(items) = d.get("items").and_then(Value::as_array) {
+                for it in items {
+                    let pre = if !title.is_empty() && title != id && id != "ticker" { format!("{title} · ") } else { String::new() };
+                    let sub = text(it, &["text"]);
+                    lines.push((format!("{pre}{}{}", text(it, &["title"]), if sub.is_empty() { String::new() } else { format!(" · {sub}") }), text(it, &["level"])));
                 }
+            } else if !text(d, &["text"]).is_empty() {
+                lines.push((format!("{} · {}", if title.is_empty() { id } else { title }, text(d, &["text"]).lines().next().unwrap_or("")), text(wd, &["level"])));
+            } else if let Some(v) = d.get("value").filter(|v| !v.is_null()) {
+                lines.push((format!("{} {} {}", if title.is_empty() { id } else { title }, ui::num_s(v), text(d, &["unit"])), text(wd, &["level"])));
             }
         }
-        if lines.is_empty() {
-            let (r, m, s2) = (text(&st, &["space", "launch", "rocket"]), text(&st, &["space", "launch", "mission"]), text(&st, &["space", "launch", "status"]));
-            if !r.is_empty() {
-                lines.push(format!("{r} · {m} · {s2}"));
-            }
-        }
-        for a in list(&st, &["alerts"]).iter().rev().take(3).rev() {
+        let alerts = list(&st, &["alerts"]);
+        for a in alerts.iter().skip(alerts.len().saturating_sub(3)) {
             let at = num(a, &["t"]).unwrap_or(0.0);
             if hub_now - at < 3600.0 {
-                lines.push(format!("{} · {} · {}", text(a, &["title"]), text(a, &["text"]), ago(at, hub_now)));
+                lines.push((format!("{} · {} · {}", text(a, &["title"]), text(a, &["text"]), ui::ago(at, hub_now)), text(a, &["level"])));
             }
         }
-        if get(&st, &["weather", "temp"]).is_number() {
-            lines.push(format!("{} {:.0}{} {} · sunset {}", text(&st, &["weather", "city"]), num(&st, &["weather", "temp"]).unwrap_or(0.0), text(&st, &["weather", "unit"]), weather_word(num(&st, &["weather", "code"]).unwrap_or(0.0) as i32).to_lowercase(), text(&st, &["weather", "sunset"])));
+        let wxs = get(&st, &["weather"]);
+        if wxs.is_object() && text(wxs, &["error"]).is_empty() {
+            lines.push((format!("{} {:.0}{} {} · sunset {}", text(wxs, &["city"]), num(wxs, &["temp"]).unwrap_or(0.0), text(wxs, &["unit"]), weather_word(num(wxs, &["code"]).unwrap_or(0.0) as i32), text(wxs, &["sunset"])), String::new()));
         }
         if !text(&st, &["sys", "host"]).is_empty() {
-            lines.push(format!("omarchy pulse · {} live sources", list(&st, &["widgets"]).len()));
+            lines.push((format!("omarchy pulse · {} live sources", list(&st, &["widgets"]).len()), String::new()));
         }
-        let ticker = if lines.is_empty() || private { String::new() } else { format!("◆ {}   {}/{}", lines[((t / 6.0) as usize) % lines.len()], ((t / 6.0) as usize) % lines.len() + 1, lines.len()) };
+        let tick_i = ((t / 6.0) as usize) % lines.len().max(1);
+        let ticker_el = if simple {
+            div()
+        } else {
+            uix.ticker(w, lines.get(tick_i).cloned(), &if lines.is_empty() { String::new() } else { format!("{}/{}", tick_i + 1, lines.len()) })
+        };
         let say = self.world.borrow().say.clone().filter(|(at, _)| t - at < 6.0);
         let say_el = div().absolute().top(px(h * 0.56)).left(px(0.0)).w(px(w)).flex().justify_center().child(match say {
             Some((at, words)) => div().px(px(22.0 * u)).py(px(8.0 * u)).bg(col(pal.bg, 0.7)).border_1().border_color(col(pal.accent2, 0.8)).text_size(px(26.0 * u)).text_color(col(pal.fg, (1.0 - ((t - at) as f32 - 5.0).max(0.0)).clamp(0.0, 1.0))).child(words),
             None => div(),
         });
-        let ticker_el = div().absolute().bottom(px(8.0 * u)).left(px(0.0)).w(px(w)).flex().justify_center().text_size(px(14.0 * u)).text_color(col(pal.fg, 0.8)).child(ticker);
 
         // ---- the planes' tags (from the last frame's positions), and one line that says what this is
         let mut tags = div().absolute().size_full();
@@ -1125,7 +1037,9 @@ impl Render for Pulse {
         } else {
             div()
         };
-        let root = div().relative().size_full().bg(col(pal.bg, 1.0)).font_family(self.font.clone()).text_size(px(15.0 * u)).text_color(col(pal.fg, 1.0));
+        // the font: yours ([pulse] font), else the one Omarchy ships, as pulse.css says
+        let font: SharedString = { let f = text(&st, &["ui", "font"]); if f.is_empty() { self.font.clone() } else { f.into() } };
+        let root = div().relative().size_full().bg(col(pal.bg, 1.0)).font_family(font).text_size(px(15.0 * u)).text_color(col(pal.fg, 1.0));
         let root = root
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, _| {
                 let t = this.started.elapsed().as_secs_f64();
@@ -1192,18 +1106,26 @@ fn load_assets(design: &Value) -> std::collections::HashMap<String, std::sync::A
 }
 
 /// The weather code (WMO, as Open-Meteo gives it) in a word, as the web page says it.
-fn weather_word(code: i32) -> &'static str {
+/// pulse.js WX: the words for the weather codes of Open-Meteo.
+pub fn weather_word(code: i32) -> &'static str {
     match code {
-        0 => "CLEAR",
-        1 | 2 => "FAIR",
-        3 => "CLOUDY",
-        45 | 48 => "FOG",
-        51..=57 => "DRIZZLE",
-        61..=67 => "RAIN",
-        71..=77 => "SNOW",
-        80..=82 => "SHOWERS",
-        85 | 86 => "SNOW",
-        95..=99 => "STORM",
+        0 => "clear",
+        1 => "mostly clear",
+        2 => "partly cloudy",
+        3 => "overcast",
+        45 | 48 => "fog",
+        51 | 53 | 55 => "drizzle",
+        56 | 57 => "freezing drizzle",
+        61 | 63 => "rain",
+        65 => "heavy rain",
+        66 | 67 => "freezing rain",
+        71 | 73 => "snow",
+        75 => "heavy snow",
+        77 => "snow grains",
+        80 | 81 => "showers",
+        82 => "violent showers",
+        85 | 86 => "snow showers",
+        95 | 96 | 99 => "thunderstorm",
         _ => "",
     }
 }
@@ -1247,22 +1169,24 @@ fn main() {
         // one wallpaper for each monitor, as the web one; [pulse] secondary = "off" keeps it on the first only
         let secondary_off = std::fs::read_to_string(hub::config_dir().join("pulse.toml")).ok().and_then(|x| x.parse::<toml::Table>().ok()).and_then(|c| c.get("pulse").and_then(|p| p.get("secondary")).and_then(|v| v.as_str().map(|v| v == "off"))).unwrap_or(false);
         let first = cx.primary_display().map(|d| d.id());
-        let mut screens: Vec<Option<gpui::DisplayId>> = cx.displays().iter().map(|d| Some(d.id())).collect();
-        screens.sort_by_key(|d| *d != first); // the first monitor first: alerts and sound live there
+        // every monitor with its own size: a layer surface is as big as we ask, and a bigger one is centred and cut
+        let mut screens: Vec<(Option<gpui::DisplayId>, Size<gpui::Pixels>)> = cx.displays().iter().map(|d| (Some(d.id()), d.bounds().size)).collect();
+        screens.sort_by_key(|d| d.0 != first); // the first monitor first: alerts and sound live there
         if a.window || screens.is_empty() {
-            screens = vec![None];
+            screens = vec![(None, size(px(0.), px(0.)))];
         } else if secondary_off {
             screens.truncate(1);
         }
         let mut opened = 0;
-        for (i, screen) in screens.into_iter().enumerate() {
+        for (i, (screen, screen_size)) in screens.into_iter().enumerate() {
             let mut options = WindowOptions::new().titlebar(None).app_id(Some("omarchy-pulse-native".to_string()));
             options = if a.window {
                 options.window_bounds(Some(WindowBounds::Windowed(Bounds { origin: point(px(0.), px(0.)), size: Size::new(px(1280.), px(720.)) })))
             } else {
                 // the wallpaper: the background layer, stretched to every edge, under the bar too, and never taking the keyboard
                 options
-                    .window_bounds(Some(WindowBounds::Windowed(Bounds { origin: point(px(0.), px(0.)), size: size(px(1920.), px(1080.)) })))
+                    // the monitor's own size (0 × 0, stretched by the anchors, when it is not known)
+                    .window_bounds(Some(WindowBounds::Windowed(Bounds { origin: point(px(0.), px(0.)), size: screen_size })))
                     .kind(WindowKind::LayerShell(LayerShellOptions {
                         namespace: "omarchy-pulse".to_string(),
                         layer: Layer::Background,
