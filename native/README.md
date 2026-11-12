@@ -12,33 +12,53 @@ air with dust drifting in it, LEDs that glide instead of stepping.
 
 ## Install, and go back
 
-It needs Rust, a Wayland compositor with wlr-layer-shell (Hyprland on Omarchy) and a Vulkan driver; Pulse must be
-installed already (its hub, `omarchy-pulse serve`, is what both renderers read).
-
-```bash
-native/install-native            # builds if needed, and makes it the wallpaper at every login
-native/install-native --remove   # back to the web wallpaper
-```
-
-It adds `pulse-native` and `pulse-native-live` to `~/.local/share/omarchy-pulse/` and one systemd drop-in
-(`omarchy-pulse.service.d/native.conf`); none of Pulse's own files change. To try it without installing:
+It needs Rust, a Wayland compositor with wlr-layer-shell (Hyprland on Omarchy) and a Vulkan driver. Pulse must be
+installed already (`extras/install-live`): its hub, `omarchy-pulse serve`, is what both renderers read. The code
+lives on the `native` branch, not on `main`.
 
 ```bash
 sudo pacman -S --needed rust wayland libxkbcommon libxkbcommon-x11 libxcb vulkan-icd-loader fontconfig freetype2
-cd native && cargo build --release
-./target/release/pulse-native            # the wallpaper, behind your windows (stop the web one first)
+git clone -b native https://github.com/piermark/omarchy-pulse-theme.git ~/pulse-native
+cd ~/pulse-native/native
+cargo build --release            # the first build takes a few minutes
+./install-native                 # makes it the wallpaper, now and at every login
+./install-native --remove        # back to the web wallpaper
+```
+
+It adds `pulse-native` and `pulse-native-live` to `~/.local/share/omarchy-pulse/` and one systemd drop-in
+(`omarchy-pulse.service.d/native.conf`); none of Pulse's own files change, and `pulse.toml` stays as it is.
+
+It draws only when Pulse itself would: with the `pulse` Omarchy theme, or with every theme if
+`~/.config/omarchy-pulse/live.conf` has `ALWAYS=1`. Otherwise the service exits quietly and nothing changes.
+`journalctl --user -u omarchy-pulse -e` shows what it did.
+
+### Update
+
+`install-native` builds only when there is no binary yet, so after a pull build again first:
+
+```bash
+cd ~/pulse-native && git pull && cd native && cargo build --release && ./install-native
+./target/release/pulse-native --version   # the version you have
+```
+
+### Try it without installing
+
+```bash
 ./target/release/pulse-native --window   # an ordinary window, to look at it
+./target/release/pulse-native            # the wallpaper, behind your windows (stop the web one first)
 ```
 
 ## Options
 
 | | |
 |---|---|
-| `--scene S` | `sphere` (the default), `skyline`, `orbit`, `calm`, `hacker`, `noir`, `mars`, `monolith`, `pond`, `city`; by default the hub's `[pulse] scene` |
-| `--fps N` | the most frames a second (default: the hub's `[pulse] fps`, 20) |
+| `--window` | an ordinary window instead of the wallpaper |
+| `--scene S` | `skyline`, `sphere`, `orbit`, `calm`, `hacker`, `noir`, `mars`, `monolith`, `pond`, `city`; by default the hub's `[pulse] scene` |
+| `--fps N` | the most frames a second, 5 to 60 (default: the hub's `[pulse] fps`, else 20) |
 | `--cpu N` | the most of one core it may use, in percent (default 15; also `PULSE_CPU`) |
 | `--url URL` | the hub (default `http://127.0.0.1:` + `PULSE_PORT` or `[pulse] port`) |
 | `--font NAME` | the font (default: `[pulse] font`, else CaskaydiaMono Nerd Font) |
+| `--version` | print the version |
 | `PULSE_PERF=1` | print every five seconds what each part of a frame costs |
 
 ## How light it is
