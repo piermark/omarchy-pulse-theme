@@ -95,6 +95,25 @@ pub struct World {
     view: Option<(f64, Value)>,
     /// effects the scenes asked for that make a sound: main.rs plays them
     pub sounds: Vec<&'static str>,
+    /// the sphere of Pulse 1.8: its texture, its map, its picture
+    pub ball: crate::sphere::Sphere,
+    /// the sphere's picture and its reflection as the GPU has them now (dropped when a new frame replaces them)
+    ball_img: Option<(std::sync::Arc<gpui::RenderImage>, std::sync::Arc<gpui::RenderImage>)>,
+    /// where the face looks, smoothed (pulse.js gaze)
+    pub gaze: (f32, f32),
+    /// what main.rs knows and the sphere shows: the clock, the date, a text being typed, when you came back, when the
+    /// car changed, a camera's and the door's frame
+    pub hm: String,
+    pub date_short: String,
+    pub typing: bool,
+    pub woke_at: f64,
+    pub car_at: f64,
+    pub cam: Option<(String, std::sync::Arc<Vec<u8>>)>,
+    pub door: Option<(String, std::sync::Arc<Vec<u8>>)>,
+    /// pulse.js alertEnv: 1 at an alert, fading
+    pub alert_env: f32,
+    /// the desktop of this monitor is empty (the face looks at you only then)
+    pub desk_empty: bool,
 }
 
 impl World {
@@ -161,7 +180,7 @@ impl World {
             })
             .collect();
         let drops = (0..900).map(|_| (r.next(), r.next(), 0.5 + r.next() * 0.5, r.next())).collect();
-        World { stars, city, clouds, drops, last_t: 0.0, sl: Vec::new(), iss: None, iss_trail: Vec::new(), liftoffs: Vec::new(), bursts: Vec::new(), flash: 0.0, shooting: Vec::new(), say: None, seed: 42, rings: Vec::new(), more: Default::default(), code: Default::default(), labels: Vec::new(), hits: Vec::new(), centre: None, pointer: None, wall: false, has_cam: false, simple: false, last: None, beats: Vec::new(), heights: Vec::new(), audio: Vec::new(), tz: 0, prog: "face", alert_at: -1e9, view: None, sounds: Vec::new() }
+        World { stars, city, clouds, drops, last_t: 0.0, sl: Vec::new(), iss: None, iss_trail: Vec::new(), liftoffs: Vec::new(), bursts: Vec::new(), flash: 0.0, shooting: Vec::new(), say: None, seed: 42, rings: Vec::new(), more: Default::default(), code: Default::default(), labels: Vec::new(), hits: Vec::new(), centre: None, pointer: None, wall: false, has_cam: false, simple: false, last: None, beats: Vec::new(), heights: Vec::new(), audio: Vec::new(), tz: 0, prog: "face", alert_at: -1e9, view: None, sounds: Vec::new(), ball: Default::default(), ball_img: None, gaze: (0.0, 0.0), hm: String::new(), date_short: String::new(), typing: false, woke_at: -1e9, car_at: -1e9, cam: None, door: None, alert_env: 0.0, desk_empty: true }
     }
 }
 
@@ -219,6 +238,37 @@ pub(crate) fn glow(win: &mut Window, cx: f32, cy: f32, r: f32, c: C, a: f32) {
     for i in 0..7 {
         let k = 1.0 - i as f32 / 7.0;
         disc(win, cx, cy, r * (1.0 - k * 0.86), c, a * 0.2 * (1.2 - k));
+    }
+}
+
+/// A canvas radial gradient of one colour (createRadialGradient(cx, cy, r0, cx, cy, r1) with these stops of alpha),
+/// drawn as discs one inside the other, each adding what is missing to reach the alpha of its ring. `sy` squashes
+/// it (a pool of light on the floor).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn radial(win: &mut Window, cx: f32, cy: f32, r0: f32, r1: f32, sy: f32, c: C, stops: &[(f32, f32)]) {
+    let alpha_at = |k: f32| -> f32 {
+        let mut prev = stops[0];
+        for s in stops {
+            if k <= s.0 {
+                let span = (s.0 - prev.0).max(1e-6);
+                return prev.1 + (s.1 - prev.1) * ((k - prev.0) / span).clamp(0.0, 1.0);
+            }
+            prev = *s;
+        }
+        prev.1
+    };
+    let n = 26;
+    let mut have = 0.0f32;
+    for i in (0..n).rev() {
+        // from the outside in: ring i ends at k = (i + 1) / n
+        let k = (i as f32 + 0.5) / n as f32;
+        let want = alpha_at(k).clamp(0.0, 0.98);
+        let add = if want > have { 1.0 - (1.0 - want) / (1.0 - have) } else { 0.0 };
+        let r = r0 + (r1 - r0) * (i as f32 + 1.0) / n as f32;
+        if add > 0.002 {
+            crate::draw::arc_fill(win, cx, cy, r, r * sy, 0.0, 0.0, std::f32::consts::TAU, c, add);
+            have = want;
+        }
     }
 }
 
@@ -676,31 +726,96 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
     let (mut rr, mut dcx, mut dcy) = (0.0f32, ox + w / 2.0, oy + hz);
     if !bare {
         // ---- the centre: the dome of the skyline, or the whole sphere of Pulse turning over the horizon
-        rr = if sphere { h * 0.19 } else { h * 0.135 };
-        dcy = if sphere { oy + hz - rr * 1.12 } else { oy + hz };
+        // pulse.js: R = H * (sphere ? .165 : .135), the sphere sits just over the horizon (cy = hz - R * .97)
+        rr = if sphere { h * 0.165 } else { h * 0.135 };
+        dcy = if sphere { oy + hz - rr * 0.97 } else { oy + hz };
         dcx = ox + w / 2.0;
         let arc = if sphere { std::f32::consts::TAU } else { std::f32::consts::PI };
-        if sphere {
-            glow(win, dcx, dcy, rr * 1.9, a2, 0.35);
-            disc(win, dcx, dcy, rr, mix(bg, a2, 0.10), 0.55);
-        } else {
+        if !sphere {
             gradient(win, dcx - rr, dcy - rr, rr * 2.0, rr, a2, 0.0, a2, 0.10);
         }
         if sphere {
+            // the eyes: towards the pointer while it moves, then slowly back to the middle (pulse.js draw())
             let eyes = get(st, &["ui", "eyes"]).as_bool().unwrap_or(true);
-            let gaze = match world.pointer {
-                Some((px0, py0, at)) if eyes && t - at < 15.0 => (((px0 - (dcx - ox)) / (h * 0.45)).clamp(-1.0, 1.0), ((py0 - (dcy - oy)) / (h * 0.45)).clamp(-1.0, 1.0)),
-                _ => (0.0, 0.0),
-            };
-            let watching = matches!(world.pointer, Some((_, _, at)) if eyes && t - at < 6.0);
-            world.prog = sphere_prog(st, t, watching, t - world.alert_at < 8.0, world.has_cam);
-            led_sphere(win, dcx, dcy, rr, st, pal, tf, u, gaze, world.prog, &world.audio);
-            // a ball, not a disc: the light it catches up on the left, and its edge turning away into the dark
-            glow(win, dcx - rr * 0.36, dcy - rr * 0.42, rr * 0.55, [1.0, 1.0, 1.0], 0.10);
-            for (k, a) in [(0.985, 0.42), (0.95, 0.26), (0.91, 0.14)] {
-                crate::draw::arc(win, dcx, dcy, rr * k, rr * k, 0.0, std::f32::consts::TAU, rr * 0.05, pal.bg, a);
+            let (mut gx, mut gy) = (0.0f32, 0.0f32);
+            if let (true, Some((px0, py0, at))) = (eyes, world.pointer) {
+                if t - at < 15.0 {
+                    gx = (px0 - w / 2.0) / (h * 0.45);
+                    gy = (py0 - (hz - h * 0.16)) / (h * 0.45);
+                    let gl = (gx * gx + gy * gy).sqrt();
+                    if gl > 1.0 {
+                        gx /= gl;
+                        gy /= gl;
+                    }
+                }
             }
-            crate::draw::arc(win, dcx, dcy, rr * 0.99, rr * 0.99, -2.6, -1.2, (u * 2.0).max(1.5), mix(pal.fg, a2, 0.4), 0.55);
+            world.gaze.0 += (gx - world.gaze.0) * 0.18;
+            world.gaze.1 += (gy - world.gaze.1) * 0.18;
+            let face_cfg = get(st, &["ui", "face"]).as_str().unwrap_or("agents").to_string();
+            let watching = matches!(world.pointer, Some((px0, py0, at)) if eyes && face_cfg != "off" && world.desk_empty && t - at < 6.0 && px0 >= 0.0 && py0 >= 0.0 && px0 <= w && py0 <= h);
+            world.alert_env *= 0.975;
+            let music = !world.audio.is_empty();
+            let bass = if music { world.audio.iter().take(4).sum::<f32>() / 4.0 / 100.0 } else { 0.0 };
+            let hm = world.hm.clone();
+            let date = world.date_short.clone();
+            let (cam, door) = (world.cam.clone(), world.door.clone());
+            let audio = world.audio.clone();
+            let feed = crate::sphere::Feed {
+                st, pal, t, hm: &hm, date: &date, gaze: world.gaze, watching, woke: t - world.woke_at, typing: world.typing, alert_env: world.alert_env,
+                audio: &audio, bass, car_age: t - world.car_at,
+                wind_k: (if get(st, &["weather", "windUnit"]).as_str() == Some("mph") { 1.609 } else { 1.0 } * (num(st, &["weather", "wind"]).unwrap_or(0.0) as f32).max(num(st, &["weather", "gust"]).unwrap_or(0.0) as f32 * 0.8) / 60.0).min(1.0),
+                cam: cam.as_ref().map(|c| (c.0.as_str(), c.1.as_slice())), door: door.as_ref().map(|c| (c.0.as_str(), c.1.as_slice())),
+            };
+            // the sphere's picture is made in the screen's own pixels (a HiDPI screen gets twice as many), at most 2x as the web page
+            world.ball.frame(&feed, rr * win.scale_factor().clamp(1.0, 2.0));
+            world.prog = world.ball.prog;
+            let avg = { let a = world.ball.avg; [a[0] / 255.0, a[1] / 255.0, a[2] / 255.0] };
+            let hzy = oy + hz;
+            if get(st, &["ui", "sphere"]).as_str() == Some("led") {
+                // the LED look: a halo in the second accent, the ball, a thin outline
+                radial(win, dcx, dcy, rr * 0.8, rr * 1.9, 1.0, if world.alert_env > 0.25 { pal.crit } else { a2 }, &[(0.0, 0.28 + 0.25 * bass), (1.0, 0.0)]);
+            } else {
+                // light on the plaza and the city, in the colour on screen
+                radial(win, dcx, hzy, rr * 0.3, rr * 3.2, 1.0, avg, &[(0.0, 0.38), (1.0, 0.0)]);
+                // the glow it throws into the wet night air, wide and soft
+                let hk = 0.34 + 0.18 * bass;
+                radial(win, dcx, dcy, rr * 0.75, rr * 2.3, 1.0, avg, &[(0.0, hk), (0.35, hk * 0.45), (0.7, hk * 0.12), (1.0, 0.0)]);
+                // where it touches the plaza: a pool of its own light
+                radial(win, dcx, hzy, 0.0, rr * 1.1, 0.16, avg, &[(0.0, 0.5), (1.0, 0.0)]);
+            }
+            // the sphere's picture, and its reflection on the wet floor (the same picture upside down, at 20%)
+            let d = world.ball.d;
+            if d > 0 && world.ball.out.len() == d * d * 4 {
+                let frame = |bytes: Vec<u8>| image::RgbaImage::from_raw(d as u32, d as u32, bytes).map(|im| std::sync::Arc::new(gpui::RenderImage::new(vec![image::Frame::new(im)])));
+                let mut flip = vec![0u8; d * d * 4];
+                for y in 0..d {
+                    let (src, dst) = ((d - 1 - y) * d * 4, y * d * 4);
+                    flip[dst..dst + d * 4].copy_from_slice(&world.ball.out[src..src + d * 4]);
+                }
+                for px4 in flip.chunks_exact_mut(4) {
+                    px4[3] = (px4[3] as f32 * 0.2) as u8;
+                }
+                if let (Some(a), Some(b)) = (frame(world.ball.out.clone()), frame(flip)) {
+                    if let Some((oa, ob)) = world.ball_img.replace((a.clone(), b.clone())) {
+                        let _ = win.drop_image(oa);
+                        let _ = win.drop_image(ob);
+                    }
+                    let at = |x: f32, y: f32, ww: f32, hh: f32| Bounds::new(point(px(x), px(y)), size(px(ww), px(hh)));
+                    let _ = win.paint_image(at(dcx - rr, dcy - rr, rr * 2.0, rr * 2.0), at(dcx - rr, dcy - rr, rr * 2.0, rr * 2.0), gpui::Corners::default(), 0.0, a, 0, false);
+                    let ry = 2.0 * hzy + rr * 0.08 - (dcy + rr);
+                    let clip = at(dcx - rr * 1.2, hzy, rr * 2.4, rr * 1.3);
+                    win.with_content_mask(Some(gpui::ContentMask { bounds: clip, ..Default::default() }), |win| {
+                        let _ = win.paint_image(at(dcx - rr, ry, rr * 2.0, rr * 2.0), at(dcx - rr, ry, rr * 2.0, rr * 2.0), gpui::Corners::default(), 0.0, b, 0, false);
+                    });
+                }
+            }
+            if get(st, &["ui", "sphere"]).as_str() == Some("led") {
+                crate::draw::arc(win, dcx, dcy, rr, rr, 0.0, std::f32::consts::TAU, (h / 700.0).max(1.0), pal.accent, 0.3);
+            } else {
+                // a thin rim of light on the outline, blending the curve into the halo
+                crate::draw::arc(win, dcx, dcy, rr * 1.0, rr * 1.0, 0.0, std::f32::consts::TAU, rr * 0.05, mix(avg, pal.fg, 0.3), 0.16);
+                crate::draw::arc(win, dcx, dcy, rr * 0.96, rr * 0.96, 0.0, std::f32::consts::TAU, rr * 0.04, avg, 0.08);
+            }
         } else {
             let mut dome = PathBuilder::stroke(px((u * 1.4).max(1.0)));
             for m in 0..=8 {

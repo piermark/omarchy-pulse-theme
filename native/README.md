@@ -4,9 +4,11 @@ A parallel renderer for Omarchy Pulse. The web page stays the default (and is wh
 paints the same wallpaper natively on the GPU, with no browser underneath. It reads the same hub: the same
 `omarchy-pulse` service, the same token and the same `pulse.toml`.
 
-**Status: 0.8, experimental: a complete port of Pulse 1.8.** Every part of the web wallpaper has its counterpart
-here; the short list at the end says what is still different. It has been built and looked at on a headless test
-compositor only (clicks and drags with a virtual pointer): on a real Omarchy PC it has yet to be tried.
+**Status: 0.9, experimental.** The port is being redone as a line-by-line translation of the published web page,
+so that it looks and moves as Pulse 1.8 does. Done this way so far: the panels, the clock and the ticker
+(pulse.css in rem: the same layout on every screen, at its full resolution), and the sphere (pulse.js's texture,
+face, programmes, gaze and LED map). The sky, the clouds, the city of where you live, the planes, the drones and
+the rest of the scene are still the earlier drawing, and are next.
 
 What it draws, from the same state the web page reads:
 

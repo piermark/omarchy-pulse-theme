@@ -22,6 +22,7 @@ mod picture;
 mod scene;
 mod ui;
 mod sound;
+mod sphere;
 mod worlds;
 
 use gpui::{
@@ -85,6 +86,9 @@ struct Pulse {
     boxes: Rc<RefCell<std::collections::HashMap<String, (String, f32, f32)>>>,
     /// text panels: the text and when it started to be typed out
     typed: std::collections::HashMap<String, (String, f64)>,
+    was_away: bool,
+    /// the first camera's frame as it came (the sphere shows it in its turn)
+    cam_bytes: Option<(String, Arc<Vec<u8>>)>,
 }
 
 impl Pulse {
@@ -111,7 +115,7 @@ impl Pulse {
         })
         .detach();
         let world = scene::World::new();
-        Pulse { hub, live, forced: !scene.is_empty(), scene, city: Rc::new(RefCell::new(city::World::new())), world: Rc::new(RefCell::new(world)), marks: Rc::new(RefCell::new(Vec::new())), mem: Rc::new(RefCell::new(design::Mem::default())), drawn: Rc::new(RefCell::new((Vec::new(), Vec::new()))), assets: (String::new(), Default::default()), reacted: 0.0, started: Instant::now(), font: font.into(), base, primary, monkey, origin: (0.0, 0.0), sound: sound::Sound::new(), wallpaper: (String::new(), None, None), cover: (String::new(), None), seen_alert: -1, incoming: None, seen_digest: 0, digest: None, ack: None, last_cursor: None, sounded: 0.0, cams: Default::default(), raw_assets: Default::default(), tinted: Default::default(), draft: None, drag: None, boxes: Default::default(), typed: Default::default() }
+        Pulse { hub, live, forced: !scene.is_empty(), scene, city: Rc::new(RefCell::new(city::World::new())), world: Rc::new(RefCell::new(world)), marks: Rc::new(RefCell::new(Vec::new())), mem: Rc::new(RefCell::new(design::Mem::default())), drawn: Rc::new(RefCell::new((Vec::new(), Vec::new()))), assets: (String::new(), Default::default()), reacted: 0.0, started: Instant::now(), font: font.into(), base, primary, monkey, origin: (0.0, 0.0), sound: sound::Sound::new(), wallpaper: (String::new(), None, None), cover: (String::new(), None), seen_alert: -1, incoming: None, seen_digest: 0, digest: None, ack: None, last_cursor: None, sounded: 0.0, cams: Default::default(), raw_assets: Default::default(), tinted: Default::default(), draft: None, drag: None, boxes: Default::default(), typed: Default::default(), was_away: false, cam_bytes: None }
     }
 
     /// A click on the wallpaper: a storm over a failing panel (twice: acknowledge it), or something of the scene,
@@ -516,6 +520,8 @@ impl Render for Pulse {
                 }
             }
             self.world.borrow_mut().has_cam = !self.cams.is_empty();
+            // pulse.js: the panel "cam", or the first picture panel; never while the screen is shared
+            self.cam_bytes = if get(&st, &["privacy"]).as_bool().unwrap_or(false) { None } else { self.hub.lock().ok().and_then(|snap| snap.cams.get("cam").or_else(|| snap.cams.values().next()).map(|c| (c.0.clone(), c.1.clone()))) };
         }
         let editing = get(&st, &["layoutEdit"]).as_bool().unwrap_or(false) && self.primary;
         if editing && self.draft.is_none() {
@@ -583,6 +589,19 @@ impl Render for Pulse {
                 }
             }
             world.audio = audio;
+            world.desk_empty = desk_empty;
+            world.hm = hm0.clone();
+            // "THU NOV 12", as toDateString() says it
+            world.date_short = { let p: Vec<&str> = date0.split(' ').collect(); if p.len() >= 3 { format!("{} {} {}", p[0], p[2], p[1]) } else { date0.clone() } };
+            world.typing = self.typed.values().any(|(full, since)| (((t - since) / 0.04) as usize).saturating_mul(3) < full.chars().count());
+            if self.was_away && !away {
+                world.woke_at = t;
+            }
+            self.was_away = away;
+            for f in &fx {
+                if f.kind == "car" { world.car_at = t }
+            }
+            world.cam = self.cam_bytes.clone();
             world.tz = local_offset_secs();
             world.simple = simple;
             world.wall = own_wall && get(&st, &["ui", "wallpaper", "mode"]).as_str() != Some("panels");
@@ -609,7 +628,7 @@ impl Render for Pulse {
                 if snap_at.is_some() { self.seen_alert = last_seq }
             } else if last_seq > self.seen_alert {
                 self.seen_alert = last_seq;
-                self.world.borrow_mut().alert_at = t;
+                { let mut wl = self.world.borrow_mut(); wl.alert_at = t; wl.alert_env = 1.0; }
                 if self.primary { self.incoming = alerts.last().map(|a| (t, a.clone())) }
             }
             // while you were away: what happened, for forty seconds or until you click it
@@ -621,7 +640,7 @@ impl Render for Pulse {
             }
         }
         let hub_scene = text(&st, &["ui", "scene"]);
-        let scene_name = if self.forced { self.scene.clone() } else if hub_scene.is_empty() { "skyline".to_string() } else { hub_scene };
+        let scene_name = if self.forced { self.scene.clone() } else if hub_scene.is_empty() { "sphere".to_string() } else { hub_scene };
         // a scene made with the editor (or a community .pulse): its design, drawn over Pulse's real sky
         let design = snap_design.clone().filter(|d| d.0 == scene_name);
         let scene_st = if get(&st, &["scene"]).is_object() { get(&st, &["scene"]).clone() } else { st.clone() };
@@ -902,39 +921,10 @@ impl Render for Pulse {
 
         // ---- the scene's own words (a scene in code, the garden, the tower...), from the last frame
         let mut words = div().absolute().size_full();
-        let (labels, centre_at, prog) = { let wd = self.world.borrow(); (wd.labels.clone(), wd.centre, wd.prog) };
+        let labels = self.world.borrow().labels.clone();
         for l in labels.iter().take(160) {
             let size = l.size.max(8.0);
             words = words.child(div().absolute().left(px(l.x - w * 0.2)).top(px(l.y)).w(px(w * 0.4)).flex().justify_center().whitespace_nowrap().text_size(px(size)).line_height(px(size * 1.25)).font_weight(if l.bold { FontWeight::BOLD } else { FontWeight::NORMAL }).text_color(col(l.c, l.a)).child(l.text.clone()));
-        }
-        // ---- what the sphere shows when it is not its face: the clock, the weather, the news, a countdown
-        if let (Some((sx, sy, sr)), true) = (centre_at, scene_name == "sphere" && !still_picture) {
-            let (big, small): (String, String) = match prog {
-                "clock" => (hm0.clone(), date0.clone()),
-                "weather" if get(&st, &["weather", "temp"]).is_number() => (format!("{:.0}{}", num(&st, &["weather", "temp"]).unwrap_or(0.0), text(&st, &["weather", "unit"])), format!("{} · {}", weather_word(num(&st, &["weather", "code"]).unwrap_or(0.0) as i32), text(&st, &["weather", "city"]))),
-                "news" => {
-                    let nw = list(&st, &["widgets"]).iter().find(|x| matches!(text(x, &["id"]).as_str(), "news" | "ai"));
-                    let line = nw.map(|x| { let it = text(x, &["data", "items", "0", "title"]); if !it.is_empty() { it } else { list(x, &["data", "items"]).first().map(|i0| text(i0, &["title"])).filter(|v| !v.is_empty()).unwrap_or_else(|| text(x, &["data", "text"]).lines().next().unwrap_or("").to_string()) } }).unwrap_or_default();
-                    (String::new(), if private { String::new() } else { line.chars().take(64).collect() })
-                }
-                "launch" => { let left = (num(&st, &["space", "launch", "net"]).unwrap_or(hub_now) - hub_now).max(0.0) as i64; (format!("T-{:02}:{:02}", left / 60, left % 60), format!("{} · {}", text(&st, &["space", "launch", "rocket"]), text(&st, &["space", "launch", "mission"]))) }
-                "focus" => { let left = (num(&st, &["focus", "until"]).unwrap_or(hub_now) - hub_now).max(0.0) as i64; (format!("{:02}:{:02}", left / 60, left % 60), { let lb = text(&st, &["focus", "label"]); if lb.is_empty() { "FOCUS".to_string() } else { lb } }) }
-                "meeting" => { let c0 = list(&st, &["calendar"]).first().cloned().unwrap_or(Value::Null); (format!("{:.0}", (num(&c0, &["start"]).unwrap_or(hub_now) - hub_now).max(0.0)), if private { "meeting".to_string() } else { text(&c0, &["title"]) }) }
-                "car" => (format!("{:.0}%", num(&st, &["car", "battery"]).unwrap_or(0.0)), format!("{} · {:.0} {}", match text(&st, &["car", "state"]).as_str() { "Complete" => "CHARGED", "Charging" => "CHARGING", _ => "CAR" }, num(&st, &["car", "range"]).unwrap_or(0.0), text(&st, &["car", "unit"]).to_uppercase())),
-                "alert" => (String::new(), self.incoming.as_ref().map(|a| text(&a.1, &["title"])).unwrap_or_default()),
-                _ => (String::new(), String::new()),
-            };
-            if let (true, Some((_, im)), false) = (prog == "camera", self.cams.values().next(), private) {
-                // your camera, across the sphere
-                words = words.child(gpui::img(im.clone()).absolute().left(px(sx - sr * 0.8)).top(px(sy - sr * 0.42)).w(px(sr * 1.6)).h(px(sr * 0.84)).object_fit(ObjectFit::Cover).rounded(px(sr * 0.08)));
-            }
-            if !big.is_empty() || !small.is_empty() {
-                words = words.child(
-                    div().absolute().left(px(sx - sr)).top(px(sy - sr * 0.42)).w(px(sr * 2.0)).h(px(sr * 0.84)).flex().flex_col().items_center().justify_center().gap(px(sr * 0.04))
-                        .child(if big.is_empty() { div() } else { div().text_size(px(sr * 0.44)).line_height(px(sr * 0.46)).font_weight(FontWeight::BOLD).text_color(col(mix(pal.fg, [1.0, 1.0, 1.0], 0.5), 1.0)).child(big) })
-                        .child(div().px(px(sr * 0.25)).text_size(px(sr * if prog == "news" { 0.10 } else { 0.085 })).text_color(col(pal.accent, 1.0)).child(small)),
-                );
-            }
         }
         // ---- your own wallpaper behind everything, dimmed as you asked
         let wall_el = match (&self.wallpaper.1, own_wall) {
