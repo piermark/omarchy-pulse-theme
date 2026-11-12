@@ -14,16 +14,20 @@ mod cities_data;
 mod city;
 mod design;
 mod draw;
+mod drones;
 mod extra;
 mod hub;
 mod life;
 mod look;
 mod modes;
 mod palette;
+mod perf;
 mod picture;
 mod scene;
 mod ui;
 mod sound;
+mod sky;
+mod floor;
 mod sphere;
 mod worlds;
 
@@ -33,7 +37,7 @@ use gpui::{
 };
 use std::sync::{Arc, Mutex};
 use hub::{get, list, num, text, FxQueue, Shared};
-use palette::{col, mix, Pal, C};
+use palette::{col, Pal, C};
 use serde_json::Value;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -86,6 +90,12 @@ struct Pulse {
     draft: Option<serde_json::Map<String, Value>>,
     drag: Option<String>,
     boxes: Rc<RefCell<std::collections::HashMap<String, (String, f32, f32)>>>,
+    /// pulse.js frame(): a PC that cannot keep up gets fewer frames (the cap), tried again at full speed a minute later
+    cap: Rc<std::cell::Cell<(u64, u32, f64)>>,
+    /// what the last frame cost on the CPU (ms): the panels, then the scene
+    cost: Rc<std::cell::Cell<(f64, f64)>>,
+    /// every panel on the screen now, for the planes
+    ui_boxes: Rc<RefCell<Vec<[f32; 4]>>>,
     /// text panels: the text and when it started to be typed out
     typed: std::collections::HashMap<String, (String, f64)>,
     was_away: bool,
@@ -107,8 +117,33 @@ impl Pulse {
                 let key = key2.lock().map(|k| k.clone()).unwrap_or_default();
                 pace(&st, &key, fps, &forced_scene, primary)
             };
-            if !covered && this.update(cx, |_, cx| cx.notify()).is_err() {
-                break;
+            let mut want = want;
+            if !covered {
+                match this.update(cx, |this, cx| {
+                    cx.notify();
+                    // pulse.js: when a frame costs more than half its time, 70% of the frames; full speed again after a minute
+                    let (mut cap, mut slow, mut at) = this.cap.get();
+                    let (c1, c2) = this.cost.get();
+                    let now = this.started.elapsed().as_secs_f64();
+                    let budget = 1000.0 / want.min(cap).max(1) as f64;
+                    if c1 + c2 > budget * 0.5 && want.min(cap) > 6 {
+                        slow += 1;
+                        if slow as u64 > 3 * want.min(cap) {
+                            cap = ((want.min(cap) as f64 * 0.7) as u64).max(6);
+                            (slow, at) = (0, now);
+                        }
+                    } else {
+                        slow = slow.saturating_sub(1);
+                    }
+                    if at > 0.0 && now - at > 60.0 {
+                        (cap, at) = (60, 0.0);
+                    }
+                    this.cap.set((cap, slow, at));
+                    cap
+                }) {
+                    Ok(cap) => want = want.min(cap),
+                    Err(_) => break,
+                }
             }
             if covered && this.update(cx, |_, _| ()).is_err() {
                 break;
@@ -117,7 +152,7 @@ impl Pulse {
         })
         .detach();
         let world = scene::World::new();
-        Pulse { hub, live, forced: !scene.is_empty(), scene, city: Rc::new(RefCell::new(city::World::new())), world: Rc::new(RefCell::new(world)), marks: Rc::new(RefCell::new(Vec::new())), mem: Rc::new(RefCell::new(design::Mem::default())), drawn: Rc::new(RefCell::new((Vec::new(), Vec::new()))), assets: (String::new(), Default::default()), reacted: 0.0, started: Instant::now(), font: font.into(), base, primary, monkey, origin: (0.0, 0.0), sound: sound::Sound::new(), wallpaper: (String::new(), None, None), cover: (String::new(), None), seen_alert: -1, incoming: None, seen_digest: 0, digest: None, ack: None, last_cursor: None, sounded: 0.0, cams: Default::default(), raw_assets: Default::default(), tinted: Default::default(), draft: None, drag: None, boxes: Default::default(), typed: Default::default(), was_away: false, cam_bytes: None }
+        Pulse { hub, live, forced: !scene.is_empty(), scene, city: Rc::new(RefCell::new(city::World::new())), world: Rc::new(RefCell::new(world)), marks: Rc::new(RefCell::new(Vec::new())), mem: Rc::new(RefCell::new(design::Mem::default())), drawn: Rc::new(RefCell::new((Vec::new(), Vec::new()))), assets: (String::new(), Default::default()), reacted: 0.0, started: Instant::now(), font: font.into(), base, primary, monkey, origin: (0.0, 0.0), sound: sound::Sound::new(), wallpaper: (String::new(), None, None), cover: (String::new(), None), seen_alert: -1, incoming: None, seen_digest: 0, digest: None, ack: None, last_cursor: None, sounded: 0.0, cams: Default::default(), raw_assets: Default::default(), tinted: Default::default(), draft: None, drag: None, boxes: Default::default(), ui_boxes: Default::default(), cap: Rc::new(std::cell::Cell::new((60, 0, 0.0))), cost: Default::default(), typed: Default::default(), was_away: false, cam_bytes: None }
     }
 
     /// A click on the wallpaper: a storm over a failing panel (twice: acknowledge it), or something of the scene,
@@ -154,7 +189,7 @@ impl Pulse {
                 Err(_) => return,
             };
             if let Some((_, d)) = design {
-                let scene_st = if get(&st, &["scene"]).is_object() { get(&st, &["scene"]).clone() } else { st };
+                let scene_st = if get(&st, &["scene"]).is_object() { get(&st, &["scene"]).clone() } else { (*st).clone() };
                 for ask in design::react_to(&d, &scene_st, &mut self.mem.borrow_mut(), t, Some(&id)) {
                     let kind = if ask.kind == "text" { "say" } else { ask.kind.as_str() };
                     world.fx(kind, &ask.text, false, t);
@@ -197,6 +232,9 @@ fn pace(st: &Value, key: &str, fps: u64, forced_scene: &str, primary: bool) -> (
     let kind = if forced_scene.is_empty() { text(ui, &["scene"]) } else { forced_scene.to_string() };
     if kind == "calm" {
         want = want.min(10);
+    }
+    if get(ui, &["motion"]).as_str() == Some("reduced") {
+        want = want.min(4); // nothing moves: a few frames a second keep the clock and the data fresh
     }
     if get(st, &["away"]).as_bool().unwrap_or(false) {
         want = want.min(8); // nobody is looking: save power
@@ -280,33 +318,7 @@ unsafe fn libc_time() -> i64 {
     time(std::ptr::null_mut())
 }
 
-fn bytes(v: f64) -> String {
-    if v >= 1e6 {
-        format!("{:.1} MB/s", v / 1e6)
-    } else {
-        format!("{:.1} KB/s", v / 1e3)
-    }
-}
 
-/// A Pulse panel: a thin frame with its title sitting on the top edge, as on the web page.
-fn panel(title: &str, pal: &Pal, u: f32) -> gpui::Div {
-    div()
-        .relative()
-        .flex()
-        .flex_col()
-        .gap(px(7.0 * u))
-        .px(px(18.0 * u))
-        .pt(px(20.0 * u))
-        .pb(px(14.0 * u))
-        .bg(col(pal.bg, 0.50))
-        .border_1()
-        .border_color(col(pal.accent, 0.40))
-        .child(
-            div().absolute().top(px(-10.0 * u)).left(px(12.0 * u)).px(px(7.0 * u)).bg(col(pal.bg, 0.92)).text_size(px(14.0 * u)).text_color(col(pal.accent, 1.0)).child(format!("◆ {title}")),
-        )
-        .child(div().absolute().bottom(px(-1.0)).left(px(-1.0)).w(px(12.0 * u)).h(px(2.0 * u)).bg(col(pal.accent, 1.0)))
-        .child(div().absolute().bottom(px(-1.0)).right(px(-1.0)).w(px(12.0 * u)).h(px(2.0 * u)).bg(col(pal.accent, 1.0)))
-}
 
 fn level_color(level: &str, pal: &Pal) -> C {
     match level {
@@ -318,185 +330,22 @@ fn level_color(level: &str, pal: &Pal) -> C {
     }
 }
 
-fn ago(t: f64, now: f64) -> String {
-    let d = (now - t).max(0.0);
-    if d < 3600.0 {
-        format!("{:.0}m", d / 60.0)
-    } else if d < 86400.0 {
-        format!("{:.0}h", d / 3600.0)
-    } else {
-        format!("{:.0}d", d / 86400.0)
-    }
-}
 
-/// A small chart of a value's history: a line, and the area under it.
-fn spark(values: Vec<f32>, c: C, u: f32) -> impl IntoElement {
-    canvas(
-        |_, _, _| {},
-        move |b, _, window, _| {
-            let (lo, hi) = values.iter().fold((f32::MAX, f32::MIN), |(l, h2), v| (l.min(*v), h2.max(*v)));
-            let span = (hi - lo).max(1e-6);
-            let (x0, y0, w, h) = (f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.size.width), f32::from(b.size.height));
-            let at = |i: usize| point(px(x0 + w * i as f32 / (values.len() - 1) as f32), px(y0 + h - (values[i] - lo) / span * h * 0.9 - h * 0.05));
-            let mut line = gpui::PathBuilder::stroke(px((1.6 * u).max(1.0)));
-            let mut area = gpui::PathBuilder::fill();
-            area.move_to(point(px(x0), px(y0 + h)));
-            for i in 0..values.len() {
-                if i == 0 { line.move_to(at(i)) } else { line.line_to(at(i)) }
-                area.line_to(at(i));
-            }
-            area.line_to(point(px(x0 + w), px(y0 + h)));
-            area.close();
-            if let Ok(p) = area.build() {
-                window.paint_path(p, col(c, 0.14));
-            }
-            if let Ok(p) = line.build() {
-                window.paint_path(p, col(c, 0.95));
-            }
-        },
-    )
-    .w_full()
-    .h(px(34.0 * u))
-}
 
-/// One of your own panels (a `[[source]]` of pulse.toml), by its type: a stat or gauge, a list, key and value rows,
-/// a status board, or text. What this renderer can't draw yet shows its note, never an empty box.
-fn widget(wd: &Value, pal: &Pal, u: f32, now: f64, rows_max: usize, private: bool, base: &str, cam: Option<Arc<gpui::Image>>) -> gpui::Div {
-    let s = |k: &str| wd.get(k).and_then(Value::as_str).unwrap_or("").to_string();
-    let data = wd.get("data").unwrap_or(&Value::Null);
-    let title = if s("title").is_empty() { s("id") } else { s("title") };
-    let mut p = panel(&title, pal, u);
-    let dim = col(pal.dim, 1.0);
-    let id = s("id");
-    let truthy = |k: &str| matches!(wd.get(k), Some(v) if !v.is_null() && v.as_bool() != Some(false) && v.as_str() != Some(""));
-    if truthy("click") && !base.is_empty() {
-        // a panel with click = "..." in pulse.toml runs that command (the hub runs it, not the wallpaper)
-        let (b2, path) = (base.to_string(), format!("/api/click/{}", urlenc(&id)));
-        p = p.cursor_pointer().on_mouse_down(MouseButton::Left, move |_, _, cx| {
-            hub::post(&b2, &path);
-            cx.stop_propagation();
-        });
-    }
-    let item_click = truthy("itemclick") && !base.is_empty();
-    match s("level").as_str() {
-        "warn" => p = p.border_color(col(pal.warn, 0.8)),
-        "crit" => p = p.border_color(col(pal.crit, 0.9)),
-        _ => {}
-    }
-    if private || wd.get("private").and_then(Value::as_bool).unwrap_or(false) && private {
-        // someone else is looking at this screen: your panels keep their place and say nothing
-        return p.child(div().text_color(dim).child("•••  hidden while the screen is shared"));
-    }
-    match s("type").as_str() {
-        "stat" | "gauge" => {
-            let v = data.get("value").and_then(Value::as_f64);
-            let unit = data.get("unit").and_then(Value::as_str).unwrap_or("").to_string();
-            let shown = match v {
-                Some(x) if x.fract().abs() < 1e-9 || x.abs() >= 100.0 => format!("{x:.0}"),
-                Some(x) => format!("{x:.2}"),
-                None => data.get("value").and_then(Value::as_str).unwrap_or("-").to_string(),
-            };
-            p = p.child(
-                div().flex().items_end().gap(px(8.0 * u)).child(div().text_size(px(44.0 * u)).line_height(px(46.0 * u)).text_color(col(pal.fg, 1.0)).child(shown)).child(div().pb(px(5.0 * u)).text_color(col(pal.accent, 1.0)).child(unit.clone())),
-            );
-            let hist: Vec<f32> = data.get("history").and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.as_f64().map(|v| v as f32)).collect()).unwrap_or_default();
-            if hist.len() > 2 {
-                p = p.child(spark(hist, pal.accent, u));
-            }
-            if s("type") == "gauge" || unit == "%" {
-                let f = (v.unwrap_or(0.0) as f32 / 100.0).clamp(0.0, 1.0);
-                p = p.child(div().h(px(8.0 * u)).bg(col(pal.dim, 0.35)).child(div().h_full().w(gpui::relative(f)).bg(col(pal.accent, 0.95))));
-            }
-        }
-        "list" | "status" => {
-            for (row_i, it) in data.get("items").and_then(Value::as_array).map(|a| a.as_slice()).unwrap_or(&[]).iter().take(rows_max).enumerate() {
-                let g = |k: &str| it.get(k).and_then(Value::as_str).unwrap_or("").to_string();
-                let right = if !g("right").is_empty() { g("right") } else if !g("note").is_empty() { g("note") } else { it.get("t").and_then(Value::as_f64).map(|t| ago(t, now)).unwrap_or_default() };
-                let mut row = div().flex().flex_col().child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.0 * u))
-                        .child(div().size(px(7.0 * u)).rounded_full().bg(col(level_color(&g("level"), pal), 1.0)))
-                        .child(div().flex_1().overflow_hidden().whitespace_nowrap().text_color(col(pal.fg, 1.0)).child(g("title").chars().take(34).collect::<String>()))
-                        .child(div().text_size(px(12.0 * u)).text_color(dim).child(right)),
-                );
-                if !g("text").is_empty() {
-                    row = row.child(div().pl(px(15.0 * u)).text_size(px(12.5 * u)).text_color(dim).child(g("text").chars().take(40).collect::<String>()));
-                }
-                if item_click {
-                    // a panel whose items can be clicked: your lights (Home Assistant)
-                    let (b2, path) = (base.to_string(), format!("/api/click/{}?item={row_i}", urlenc(&id)));
-                    row = row.cursor_pointer().on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                        hub::post(&b2, &path);
-                        cx.stop_propagation();
-                    });
-                }
-                p = p.child(row);
-            }
-        }
-        "kv" | "table" => {
-            for r in data.get("rows").and_then(Value::as_array).map(|a| a.as_slice()).unwrap_or(&[]).iter().take(rows_max + 2) {
-                let cell = |i: usize| match r.get(i) {
-                    Some(Value::String(x)) => x.clone(),
-                    Some(Value::Null) | None => String::new(),
-                    Some(x) => x.to_string(),
-                };
-                let cols = r.as_array().map(|a| a.len()).unwrap_or(0).min(5);
-                if cols <= 2 {
-                    p = p.child(div().flex().justify_between().child(div().text_color(dim).child(cell(0))).child(div().text_color(col(pal.fg, 1.0)).child(cell(1))));
-                } else {
-                    let mut row = div().flex().gap(px(8.0 * u));
-                    for i in 0..cols {
-                        row = row.child(div().flex_1().overflow_hidden().whitespace_nowrap().text_size(px(13.0 * u)).text_color(if i == 0 { dim } else { col(pal.fg, 1.0) }).child(cell(i).chars().take(18).collect::<String>()));
-                    }
-                    p = p.child(row);
-                }
-            }
-        }
-        "chart" => {
-            // one line for each series, in the theme's colours
-            for (i, sr) in data.get("series").and_then(Value::as_array).map(|a| a.as_slice()).unwrap_or(&[]).iter().take(4).enumerate() {
-                let vals: Vec<f32> = sr.get("values").or_else(|| sr.get("v")).unwrap_or(sr).as_array().map(|a| a.iter().filter_map(|x| x.as_f64().map(|v| v as f32)).collect()).unwrap_or_default();
-                if vals.len() > 2 {
-                    p = p.child(spark(vals, [pal.accent, pal.accent2, pal.ok, pal.warn][i % 4], u));
-                }
-            }
-        }
-        "image" => {
-            // a picture or a camera's frame the hub already holds (a data: URL): nothing is fetched from here
-            let src = data.get("frame").or_else(|| data.get("src")).and_then(Value::as_str).unwrap_or("");
-            if let Some(im) = cam.or_else(|| data_image(src)) {
-                p = p.child(gpui::img(im).w_full().h(px(170.0 * u)));
-            }
-        }
-        "text" => {
-            for line in data.get("text").and_then(Value::as_str).unwrap_or("").lines().take(6) {
-                p = p.child(div().text_size(px(16.0 * u)).text_color(col(pal.fg, 1.0)).child(line.chars().take(90).collect::<String>()));
-            }
-        }
-        _ => {}
-    }
-    let note = data.get("note").and_then(Value::as_str).unwrap_or("");
-    if !note.is_empty() {
-        p = p.child(div().text_size(px(12.5 * u)).text_color(dim).child(note.chars().take(60).collect::<String>()));
-    }
-    p
-}
 
-/// A row with a name, a bar as full as the value, and the value.
-fn meter(name: &str, frac: f32, value: String, c: C, pal: &Pal, u: f32) -> gpui::Div {
-    div()
-        .flex()
-        .items_center()
-        .gap(px(8.0 * u))
-        .child(div().w(px(40.0 * u)).text_color(col(pal.dim, 1.0)).child(name.to_string()))
-        .child(div().flex_1().h(px(6.0 * u)).bg(col(pal.dim, 0.35)).child(div().h_full().w(gpui::relative(frac.clamp(0.0, 1.0))).bg(col(c, 0.95))))
-        .child(div().w(px(64.0 * u)).flex().justify_end().text_color(col(pal.fg, 1.0)).child(value))
-}
 
 impl Render for Pulse {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let a = Instant::now();
+        let el = crate::perf::time("render", || self.render_inner(window, cx));
+        let c = self.cost.get();
+        self.cost.set((a.elapsed().as_secs_f64() * 1000.0, c.1));
+        el
+    }
+}
+
+impl Pulse {
+    fn render_inner(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui::Div {
         let (st, snap_at, snap_error, snap_design, snap_handwritten) = {
             let Ok(snap) = self.hub.lock() else { return div() };
             // your own wallpaper and the song's cover: decoded once for each version
@@ -645,7 +494,7 @@ impl Render for Pulse {
         let scene_name = if self.forced { self.scene.clone() } else if hub_scene.is_empty() { "sphere".to_string() } else { hub_scene };
         // a scene made with the editor (or a community .pulse): its design, drawn over Pulse's real sky
         let design = snap_design.clone().filter(|d| d.0 == scene_name);
-        let scene_st = if get(&st, &["scene"]).is_object() { get(&st, &["scene"]).clone() } else { st.clone() };
+        let scene_st = if get(&st, &["scene"]).is_object() { get(&st, &["scene"]).clone() } else { (*st).clone() };
         if let Some((name, d)) = &design {
             if &self.assets.0 != name {
                 self.assets = (name.clone(), load_assets(d));
@@ -665,7 +514,6 @@ impl Render for Pulse {
         }
         let bare = design.as_ref().map(|d| !d.1.get("city").and_then(Value::as_bool).unwrap_or(false)).unwrap_or(false);
         let private = get(&st, &["privacy"]).as_bool().unwrap_or(false) || get(&st, &["screencast"]).as_bool().unwrap_or(false);
-        let heat = |v: f32| if v > 0.9 { pal.crit } else if v > 0.75 { pal.warn } else { pal.accent };
 
         // ---- the world, on a canvas under everything
         let (world, old, is_city, marks_out, st2, pal2) = (self.world.clone(), self.city.clone(), scene_name == "city", self.marks.clone(), st.clone(), pal);
@@ -673,14 +521,18 @@ impl Render for Pulse {
         let still_picture = own_wall && get(&st, &["ui", "wallpaper", "mode"]).as_str() == Some("panels");
         let scene_pal = if scene_name == "hacker" { modes::green(&pal) } else { pal };
         let (design2, scene_st2, mem2, drawn_out) = (design.clone(), scene_st.clone(), self.mem.clone(), self.drawn.clone());
+        let scene_font: SharedString = { let f = text(&st, &["ui", "font"]); if f.is_empty() { self.font.clone() } else { f.into() } };
+        let boxes_in = self.ui_boxes.clone();
+        let cost_out = self.cost.clone();
         let sky = canvas(
             |_, _, _| {},
-            move |bounds, _, window, _| {
+            move |bounds, _, window, cx| {
                 if still_picture {
                     marks_out.borrow_mut().clear();
                     return;
                 }
-                let marks = if is_city { city::paint(bounds, &mut old.borrow_mut(), &st2, &pal2, t, window) } else { scene::paint(bounds, &mut world.borrow_mut(), &st2, &scene_pal, t, &kind2, bare, window) };
+                let began = Instant::now();
+                let marks = if is_city { city::paint(bounds, &mut old.borrow_mut(), &st2, &pal2, t, window) } else { crate::perf::time("scene", || scene::paint(bounds, &mut world.borrow_mut(), &st2, &scene_pal, t, &kind2, bare, window, cx, &scene_font, &boxes_in.borrow())) };
                 if let Some((_, d)) = &design2 {
                     let (ox, oy, w2, h2) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y), f32::from(bounds.size.width), f32::from(bounds.size.height));
                     *drawn_out.borrow_mut() = design::paint(window, d, &scene_st2, &pal2, &mut mem2.borrow_mut(), t, ox, oy, w2, h2);
@@ -688,26 +540,18 @@ impl Render for Pulse {
                     *drawn_out.borrow_mut() = (Vec::new(), Vec::new());
                 }
                 *marks_out.borrow_mut() = marks;
+                let c = cost_out.get();
+                cost_out.set((c.0, began.elapsed().as_secs_f64() * 1000.0));
             },
         )
         .absolute()
         .size_full();
 
-        // ---- the clock
-        let user = text(&st, &["sys", "user"]);
-        let host = text(&st, &["sys", "host"]);
-        let up = num(&st, &["sys", "uptime"]).unwrap_or(0.0) as i64;
-        let upt = if up > 86400 { format!(" · up {}d {}h", up / 86400, (up % 86400) / 3600) } else if up > 0 { format!(" · up {}h {}m", up / 3600, (up % 3600) / 60) } else { String::new() };
-        let theme = { let n = text(&st, &["theme", "name"]); if n.is_empty() { "omarchy".to_string() } else { n } };
-        let heart = num(&st, &["heart"]).filter(|v| *v > 0.0).map(|v| format!(" · ♥ {v:.0}")).unwrap_or_default();
-        let title = { let x = text(&st, &["ui", "title"]); if x.is_empty() { String::new() } else { format!("   {x}") } };
-        let who = if user.is_empty() { "pulse-native".to_string() } else { format!("{user}@{host} · {theme}{upt}{heart}{title}") };
         // ---- the panels, the clock and the ticker: pulse.css in rem, so the same layout fits every screen
         let rr = ui::rem(w, h);
         let uix = ui::Ui { r: rr, pal: &pal, private, now: hub_now };
         let sec_n: f32 = sec.parse().unwrap_or(0.0);
         let clock_el = div().absolute().top(px((3.6 + 1.2 - 0.75) * rr)).left(px(29.6 * rr)).w(px((w - 59.2 * rr).max(0.0))).flex().justify_center().child(uix.clock(&st, &hm, &sec, sec_n / 59.0, &date));
-        let now = hub_now;
         let mut mine: Vec<&Value> = list(&st, &["widgets"]).iter().collect();
         mine.sort_by(|a, b| a.get("order").and_then(Value::as_f64).unwrap_or(50.0).total_cmp(&b.get("order").and_then(Value::as_f64).unwrap_or(50.0)));
         // pulse.js render(): system and network on the left, the weather on the right, yours where they say (or,
@@ -774,6 +618,7 @@ impl Render for Pulse {
             let draft_v = self.draft.clone().map(Value::Object);
             let layout = draft_v.as_ref().unwrap_or_else(|| get(&st, &["layout"]));
             self.boxes.borrow_mut().clear();
+            self.ui_boxes.borrow_mut().clear();
             let noc_on = get(&st, &["noc", "on"]).as_bool().unwrap_or(false);
             let noc_hide: Vec<String> = get(&st, &["ui", "nocHide"]).as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_else(|| vec!["media".into(), "notifications".into()]);
             let mut placed: Vec<(String, f64, ui::Panel)> = Vec::new();
@@ -790,7 +635,7 @@ impl Render for Pulse {
                     let (boxes, id_box, slot_box) = (self.boxes.clone(), id.clone(), sl.clone());
                     let (id_down, id_hide) = (id.clone(), id.clone());
                     let el = div().relative().border_1().border_dashed().border_color(col(if dragging.as_deref() == Some(id.as_str()) { pal.warn } else { pal.accent }, 0.7)).cursor_pointer().opacity(if hidden { 0.3 } else { 1.0 }).child(p.el)
-                        .child(canvas(move |b, _, _| { boxes.borrow_mut().insert(id_box, (slot_box, f32::from(b.origin.y), f32::from(b.size.height))); }, |_, _, _, _| ()).absolute().size_full())
+                        .child(canvas(move |b, _, _| { boxes.borrow_mut().insert(id_box, (slot_box, f32::from(b.origin.y), f32::from(b.size.height))); }, |_, _, _, _| ()).absolute().top_0().left_0().size_full())
                         .on_mouse_down(MouseButton::Left, cx.listener(move |this, _: &MouseDownEvent, _, cx| { this.drag = Some(id_down.clone()); cx.stop_propagation(); }))
                         .on_mouse_down(MouseButton::Right, cx.listener(move |this, _: &MouseDownEvent, _, cx| {
                             if let Some(d) = this.draft.as_mut() {
@@ -802,7 +647,9 @@ impl Render for Pulse {
                         }));
                     ui::Panel { id: p.id, el, h: p.h }
                 } else {
-                    p
+                    // where it is on the screen, for the planes (pulse.js uiBoxes): a plane never flies hidden under a panel
+                    let rec = self.ui_boxes.clone();
+                    ui::Panel { id: p.id, el: p.el.child(canvas(move |b, _, _| rec.borrow_mut().push([f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.size.width), f32::from(b.size.height)]), |_, _, _, _| ()).absolute().top_0().left_0().size_full()), h: p.h }
                 };
                 placed.push((sl, order, p));
             }
@@ -865,11 +712,19 @@ impl Render for Pulse {
         } else {
             uix.ticker(w, lines.get(tick_i).cloned(), &if lines.is_empty() { String::new() } else { format!("{}/{}", tick_i + 1, lines.len()) })
         };
-        let say = self.world.borrow().say.clone().filter(|(at, _)| t - at < 6.0);
-        let say_el = div().absolute().top(px(h * 0.56)).left(px(0.0)).w(px(w)).flex().justify_center().child(match say {
-            Some((at, words)) => div().px(px(22.0 * u)).py(px(8.0 * u)).bg(col(pal.bg, 0.7)).border_1().border_color(col(pal.accent2, 0.8)).text_size(px(26.0 * u)).text_color(col(pal.fg, (1.0 - ((t - at) as f32 - 5.0).max(0.0)).clamp(0.0, 1.0))).child(words),
+        // pulse.js fxText(): a line of light low over the plaza (#fxtext: 3.4rem, thin, spaced), 3.8 s, fading in .6 s
+        let say = self.world.borrow().say.clone().filter(|(at, _)| t - at < 4.4);
+        let say_el = match say {
+            Some((at, words)) => {
+                let age = (t - at) as f32;
+                let a = (age / 0.6).min(1.0).min(((4.4 - age) / 0.6).clamp(0.0, 1.0));
+                let fs = 3.4 * rr;
+                div().absolute().top(px(h * 0.82)).left(px(0.0)).w(px(w)).flex().justify_center().opacity(a)
+                    .text_size(px(fs)).font_weight(FontWeight::EXTRA_LIGHT).text_color(col(pal.fg, 1.0))
+                    .child(ui::spaced(&words, 0.18, fs))
+            }
             None => div(),
-        });
+        };
 
         // ---- the planes' tags (from the last frame's positions), and one line that says what this is
         let mut tags = div().absolute().size_full();
@@ -943,11 +798,20 @@ impl Render for Pulse {
                 let shown = (((t - at) * 1000.0 / 28.0) / 1.6) as usize;
                 let glyphs: Vec<char> = "█▓▒░<>/\\|#$%&*+=?01".chars().collect();
                 let title: String = full_title.chars().enumerate().map(|(i, ch)| if i < shown || ch == ' ' { ch } else { glyphs[((t * 37.0) as usize + i * 7) % glyphs.len()] }).collect();
-                div().absolute().top(px(h * 0.34)).left(px(0.0)).w(px(w)).flex().justify_center().child(
-                    div().min_w(px(520.0 * u)).max_w(px(980.0 * u)).px(px(36.0 * u)).py(px(22.0 * u)).flex().flex_col().items_center().gap(px(8.0 * u)).bg(col(pal.bg, 0.86)).border_2().border_color(col(c, 1.0))
-                        .child(div().text_size(px(15.0 * u)).text_color(col(c, if (t * 2.0) as i64 % 2 == 0 { 1.0 } else { 0.3 })).child("I N C O M I N G"))
-                        .child(div().text_size(px(36.0 * u)).text_color(col(pal.fg, 1.0)).child(title))
-                        .child(div().text_size(px(18.0 * u)).text_color(col(pal.fg, 0.75)).child(if private { String::new() } else { text(a, &["text"]) })),
+                // pulse.css #incoming: in the middle at 41% of the height, nearly opaque, a glow in the alert's colour
+                let rr = ui::rem(w, h);
+                div().absolute().top(px(0.0)).left(px(0.0)).w(px(w)).h(px(h * 0.82)).flex().items_center().justify_center().child(
+                    div().min_w(px(44.0 * rr)).max_w(px(70.0 * rr)).pt(px(1.6 * rr)).pb(px(1.5 * rr)).px(px(2.6 * rr)).flex().flex_col().items_center().bg(col(pal.bg, 0.97)).border_2().border_color(col(c, 1.0))
+                        .shadow(vec![gpui::BoxShadow { color: col(c, 0.45).into(), offset: point(px(0.0), px(0.0)), blur_radius: px(4.0 * rr), spread_radius: px(0.0), inset: false }])
+                        .child(div().text_size(px(1.1 * rr)).text_color(col(c, if (t * 2.0) as i64 % 2 == 0 { 1.0 } else { 0.3 })).child(ui::spaced("INCOMING", 0.7, 1.1 * rr)))
+                        .child(div().mt(px(0.6 * rr)).text_size(px(2.6 * rr)).text_color(col(pal.fg, 1.0)).child(title))
+                        .child(div().mt(px(0.5 * rr)).text_size(px(1.3 * rr)).text_color(col(pal.fg, 0.75)).child(if private { String::new() } else { text(a, &["text"]) }))
+                        .cursor_pointer()
+                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                            this.incoming = None;
+                            cx.stop_propagation();
+                            cx.notify();
+                        })),
                 )
             }
             None => div(),
@@ -972,6 +836,7 @@ impl Render for Pulse {
                 div().absolute().top(px(h * 0.28)).left(px(0.0)).w(px(w)).flex().justify_center().child(frame.on_mouse_down(MouseButton::Left, cx.listener(|this, _: &MouseDownEvent, _, cx| {
                     this.digest = None;
                     cx.stop_propagation();
+                    cx.notify();
                 })))
             }
             _ => div(),
@@ -1053,14 +918,6 @@ impl Render for Pulse {
     }
 }
 
-/// A picture from a data: URL (PNG, JPEG, WebP, GIF or SVG), or nothing.
-fn data_image(url: &str) -> Option<std::sync::Arc<gpui::Image>> {
-    use base64::Engine;
-    let (head, body) = url.strip_prefix("data:")?.split_once(',')?;
-    let format = if head.contains("svg") { gpui::ImageFormat::Svg } else if head.contains("jpeg") || head.contains("jpg") { gpui::ImageFormat::Jpeg } else if head.contains("webp") { gpui::ImageFormat::Webp } else if head.contains("gif") { gpui::ImageFormat::Gif } else { gpui::ImageFormat::Png };
-    let bytes = if head.contains("base64") { base64::engine::general_purpose::STANDARD.decode(body.trim()).ok()? } else { body.as_bytes().to_vec() };
-    Some(std::sync::Arc::new(gpui::Image::from_bytes(format, bytes)))
-}
 
 /// The pictures of a design: its assets are data: URLs (PNG, JPEG, WebP, GIF or SVG), so a scene stays one file.
 /// The same pictures as they came (not SVG): a tint is made from these.

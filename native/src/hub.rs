@@ -13,7 +13,7 @@ pub const BUILTIN: [&str; 10] = ["sphere", "skyline", "orbit", "calm", "hacker",
 /// What the hub said last, and when.
 #[derive(Clone, Default)]
 pub struct Snapshot {
-    pub state: Value,
+    pub state: Arc<Value>,
     pub at: Option<Instant>,
     pub error: Option<String>,
     /// the design of the hub's scene when it is one made with the editor (or a community `.pulse`): its name, its data
@@ -163,7 +163,7 @@ pub fn start(base: String, token: String) -> Shared {
                                 }
                             }
                             s.cams.retain(|k, _| seen.contains(k));
-                            s.state = v;
+                            s.state = Arc::new(v);
                             s.at = Some(Instant::now());
                             s.error = None;
                         }

@@ -3,7 +3,7 @@
 //! screen, from a 1366×768 laptop to a 4K monitor. A panel that does not fit in its column is hidden, never cut.
 
 use crate::hub::{get, list, num, text};
-use crate::palette::{col, mix, Pal, C};
+use crate::palette::{col, Pal, C};
 use gpui::{canvas, div, point, prelude::*, px, relative, FontWeight, PathBuilder};
 use serde_json::Value;
 
@@ -126,7 +126,7 @@ impl Ui<'_> {
             while x < w {
                 let cw = cell.min(w - x);
                 let lit = x + cw <= w * pct + 0.5;
-                win.paint_quad(gpui::fill(gpui::Bounds { origin: point(px(x0 + x), px(y0)), size: gpui::size(px(cw), px(h)) }, if lit { on } else { dim }));
+                win.paint_quad(gpui::PaintQuad::new(gpui::Bounds { origin: point(px(x0 + x), px(y0)), size: gpui::size(px(cw), px(h)) }).background(if lit { on } else { dim }));
                 x += step;
             }
         }).size_full())
@@ -696,10 +696,6 @@ pub fn fit(panels: Vec<Panel>, avail: f32, gap: f32) -> Vec<Panel> {
     out
 }
 
-/// A colour between two, as `mix` in pulse.js (re-exported for the panels' callers).
-pub fn blend(a: C, b: C, k: f32) -> C {
-    mix(a, b, k)
-}
 
 /// pulse.js wxKind().
 pub fn wx_kind(c: i32) -> &'static str {

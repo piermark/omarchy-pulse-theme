@@ -34,7 +34,8 @@ const f = n => { const s = (Math.round(n * 1e5) / 1e5).toString(); return /[.e]/
 let out = "//! Made by native/tools/gen-cities.js from extras/pulse/web/pulse.js (LM and CITIES): do not edit by hand.\n" +
   "//! Each landmark: (name, x from -1 to 1 beside the core, width and height in screen heights, how it is drawn, its outlines\n" +
   "//! in screen heights from its foot on the horizon).\n\n" +
-  "pub struct Landmark {\n    pub name: &'static str,\n    pub x: f32,\n    pub w: f32,\n    pub h: f32,\n    /// drawn as a line (a wheel, a bridge), not filled\n    pub stroked: bool,\n    /// a hill, a mesa, a volcano: no windows\n    pub nat: bool,\n    pub flat: bool,\n    /// tall enough for a red light on its top\n    pub top: bool,\n    pub paths: &'static [&'static [(f32, f32)]],\n}\n\n";
+  "#[allow(dead_code)] // the name is there for whoever reads the data
+pub struct Landmark {\n    pub name: &'static str,\n    pub x: f32,\n    pub w: f32,\n    pub h: f32,\n    /// drawn as a line (a wheel, a bridge), not filled\n    pub stroked: bool,\n    /// a hill, a mesa, a volcano: no windows\n    pub nat: bool,\n    pub flat: bool,\n    /// tall enough for a red light on its top\n    pub top: bool,\n    pub paths: &'static [&'static [(f32, f32)]],\n}\n\n";
 let table = "pub fn city(name: &str) -> Option<&'static [Landmark]> {\n    Some(match name {\n";
 let k = 0;
 for (const [name, list] of Object.entries(env.CITIES)) {

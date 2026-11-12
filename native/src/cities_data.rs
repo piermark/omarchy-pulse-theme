@@ -2,6 +2,7 @@
 //! Each landmark: (name, x from -1 to 1 beside the core, width and height in screen heights, how it is drawn, its outlines
 //! in screen heights from its foot on the horizon).
 
+#[allow(dead_code)] // the name is there for whoever reads the data
 pub struct Landmark {
     pub name: &'static str,
     pub x: f32,

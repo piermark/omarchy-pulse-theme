@@ -64,7 +64,9 @@ struct Map {
 
 pub struct Sphere {
     tex: Pixmap,
-    font: Option<fontdue::Font>,
+    font: Option<std::rc::Rc<fontdue::Font>>,
+    /// every letter already drawn, with its outline: made once, not every frame
+    glyphs: Glyphs,
     map: Option<Map>,
     /// the sphere's picture, D×D, BGRA
     pub out: Vec<u8>,
@@ -133,10 +135,53 @@ pub fn face_mood(f: &Feed) -> Option<&'static str> {
     Some(match text(a, &["state"]).as_str() { "working" => "think", "waiting" => "alert", "done" => "happy", "failed" => "sad", _ => "idle" })
 }
 
+/// A letter at one size: its coverage, and the same coverage widened all round (the dark outline of txt2).
+struct Glyph {
+    m: fontdue::Metrics,
+    cov: Vec<u8>,
+    out: Vec<u8>,
+    r: i32,
+}
+type Glyphs = std::collections::HashMap<(char, u32), std::rc::Rc<Glyph>>;
+
+fn glyph(font: &fontdue::Font, cache: &mut Glyphs, ch: char, px: f32, lw: f32) -> std::rc::Rc<Glyph> {
+    let key = (ch, (px * 8.0) as u32);
+    if let Some(g) = cache.get(&key) {
+        return g.clone();
+    }
+    let (m, cov) = font.rasterize(ch, px);
+    let r = lw.ceil() as i32;
+    let (w0, h0) = (m.width as i32, m.height as i32);
+    let (w1, h1) = (w0 + 2 * r, h0 + 2 * r);
+    let ring: Vec<(i32, i32)> = (0..12).map(|i| { let a = i as f32 / 12.0 * TAU; ((a.cos() * lw).round() as i32, (a.sin() * lw).round() as i32) }).collect();
+    // the outline as the canvas strokes it, twelve copies around the letter: their union, kept as one picture
+    let mut out = vec![0u8; (w1.max(0) * h1.max(0)) as usize];
+    for (dx, dy) in &ring {
+        for gy in 0..h0 {
+            for gx in 0..w0 {
+                let v = cov[(gy * w0 + gx) as usize];
+                if v == 0 { continue }
+                let o = ((gy + r + dy) * w1 + gx + r + dx) as usize;
+                // several layers of 85% black: the same as drawing them one over the other
+                let a = out[o] as f32 / 255.0;
+                let b = v as f32 / 255.0 * 0.85;
+                out[o] = ((a + b - a * b) * 255.0) as u8;
+            }
+        }
+    }
+    if cache.len() > 600 {
+        cache.clear();
+    }
+    let g = std::rc::Rc::new(Glyph { m, cov, out, r });
+    cache.insert(key, g.clone());
+    g
+}
+
 /// A painter over the texture, in the texture's units (the canvas calls of pulse.js, one for one).
 struct Tex<'a> {
     pm: &'a mut Pixmap,
     font: Option<&'a fontdue::Font>,
+    glyphs: &'a mut Glyphs,
     ts: Transform,
     alpha: f32,
 }
@@ -191,26 +236,28 @@ impl Tex<'_> {
     fn text(&mut self, s: &str, x: f32, y: f32, size: f32, c: Rgb, left: bool) -> f32 {
         let Some(font) = self.font else { return 0.0 };
         let px = size * TX;
-        let glyphs: Vec<(fontdue::Metrics, Vec<u8>)> = s.chars().map(|ch| font.rasterize(ch, px)).collect();
-        let width: f32 = glyphs.iter().map(|g| g.0.advance_width).sum();
+        let lw = (size / 8.0).max(2.0) * TX / 2.0; // half the stroke's width, in pixels
+        let glyphs: Vec<std::rc::Rc<Glyph>> = s.chars().map(|ch| glyph(font, self.glyphs, ch, px, lw)).collect();
+        let width: f32 = glyphs.iter().map(|g| g.m.advance_width).sum();
         let lm = font.horizontal_line_metrics(px);
         let (asc, desc) = lm.map(|m| (m.ascent, m.descent)).unwrap_or((px * 0.8, -px * 0.2));
         let base = y * TX + (asc + desc) / 2.0; // textBaseline "middle": the middle of the em box
         let mut pen = if left { x * TX } else { x * TX - width / 2.0 };
         let (w, h) = (self.pm.width() as i32, self.pm.height() as i32);
-        let lw = (size / 8.0).max(2.0) * TX / 2.0; // half the stroke's width, in pixels
-        let ring: Vec<(i32, i32)> = (0..12).map(|i| { let a = i as f32 / 12.0 * TAU; ((a.cos() * lw).round() as i32, (a.sin() * lw).round() as i32) }).collect();
         let alpha = self.alpha;
         let data = self.pm.data_mut();
-        let mut blit = |m: &fontdue::Metrics, cov: &[u8], ox: i32, oy: i32, col: Rgb, k: f32| {
-            for gy in 0..m.height as i32 {
+        // tiny-skia keeps premultiplied pixels; the texture is opaque, so this is a plain mix
+        let mut blit = |gw: i32, gh: i32, cov: &[u8], ox: i32, oy: i32, col: Rgb, k: f32| {
+            for gy in 0..gh {
                 let py = oy + gy;
                 if py < 0 || py >= h { continue }
-                for gx in 0..m.width as i32 {
+                let row = (gy * gw) as usize;
+                for gx in 0..gw {
+                    let v = cov[row + gx as usize];
+                    if v == 0 { continue }
                     let pxx = ox + gx;
                     if pxx < 0 || pxx >= w { continue }
-                    let a = cov[(gy * m.width as i32 + gx) as usize] as f32 / 255.0 * k * alpha;
-                    if a <= 0.0 { continue }
+                    let a = v as f32 / 255.0 * k * alpha;
                     let o = ((py * w + pxx) * 4) as usize;
                     for ch in 0..3 {
                         data[o + ch] = (data[o + ch] as f32 * (1.0 - a) + col[ch] * a) as u8;
@@ -220,17 +267,15 @@ impl Tex<'_> {
         };
         // strokeText in rgba(0,0,0,.85), then fillText
         let mut p2 = pen;
-        for (m, cov) in &glyphs {
-            let (gx, gy) = ((p2 + m.xmin as f32).round() as i32, (base - m.height as f32 - m.ymin as f32).round() as i32);
-            for (dx, dy) in &ring {
-                blit(m, cov, gx + dx, gy + dy, [0.0, 0.0, 0.0], 0.85);
-            }
-            p2 += m.advance_width;
+        for g in &glyphs {
+            let (gx, gy) = ((p2 + g.m.xmin as f32).round() as i32, (base - g.m.height as f32 - g.m.ymin as f32).round() as i32);
+            blit(g.m.width as i32 + 2 * g.r, g.m.height as i32 + 2 * g.r, &g.out, gx - g.r, gy - g.r, [0.0, 0.0, 0.0], 1.0);
+            p2 += g.m.advance_width;
         }
-        for (m, cov) in &glyphs {
-            let (gx, gy) = ((pen + m.xmin as f32).round() as i32, (base - m.height as f32 - m.ymin as f32).round() as i32);
-            blit(m, cov, gx, gy, c, 1.0);
-            pen += m.advance_width;
+        for g in &glyphs {
+            let (gx, gy) = ((pen + g.m.xmin as f32).round() as i32, (base - g.m.height as f32 - g.m.ymin as f32).round() as i32);
+            blit(g.m.width as i32, g.m.height as i32, &g.cov, gx, gy, c, 1.0);
+            pen += g.m.advance_width;
         }
         width / TX
     }
@@ -337,7 +382,7 @@ impl Default for Sphere {
 
 impl Sphere {
     pub fn new() -> Self {
-        let font = font_file().and_then(|b| fontdue::Font::from_bytes(b, fontdue::FontSettings::default()).ok());
+        let font = font_file().and_then(|b| fontdue::Font::from_bytes(b, fontdue::FontSettings::default()).ok()).map(std::rc::Rc::new);
         // pulse.js ledGrid()
         let mut led = Vec::new();
         for i in 0..46 {
@@ -347,7 +392,7 @@ impl Sphere {
                 led.push((phi, j as f32 / n as f32 * TAU));
             }
         }
-        Sphere { tex: Pixmap::new((TW * TX) as u32, (TH * TX) as u32).expect("the sphere's texture"), font, map: None, out: Vec::new(), d: 0, avg: [0.0; 3], prog_i: 0, prog_at: 0.0, prog: "face", led, pics: Default::default() }
+        Sphere { tex: Pixmap::new((TW * TX) as u32, (TH * TX) as u32).expect("the sphere's texture"), font, glyphs: Default::default(), map: None, out: Vec::new(), d: 0, avg: [0.0; 3], prog_i: 0, prog_at: 0.0, prog: "face", led, pics: Default::default() }
     }
 
     /// pulse.js sphereProgram(): what is urgent first, then the face, the music, and the programmes in turn.
@@ -460,7 +505,7 @@ impl Sphere {
         let has_cam = prog == "camera" && self.picture("cam", f.cam, (TH * 1.8 * TX) as u32, (TH * 0.76 * TX) as u32);
         let has_door = prog == "door" && self.picture("door", f.door, (TH * 1.9 * TX) as u32, (TH * 0.88 * TX) as u32);
         let font = self.font.clone();
-        let mut c = Tex { pm: &mut self.tex, font: font.as_ref(), ts: Transform::from_scale(TX, TX), alpha: 1.0 };
+        let mut c = Tex { pm: &mut self.tex, font: font.as_deref(), glyphs: &mut self.glyphs, ts: Transform::from_scale(TX, TX), alpha: 1.0 };
         // the sphere is a screen: a glowing base that turns with it, content on top
         c.rect(0.0, 0.0, TW, TH, [0.0; 3], 1.0);
         if led_style {
@@ -672,7 +717,7 @@ impl Sphere {
             // the doorbell: who is at the door, on the whole sphere
             for x in at { self.add_picture("door", x - TH * 0.95, TH * 0.06, 1.0) }
             let font = self.font.clone();
-            let mut c = Tex { pm: &mut self.tex, font: font.as_ref(), ts: Transform::from_scale(TX, TX), alpha: 1.0 };
+            let mut c = Tex { pm: &mut self.tex, font: font.as_deref(), glyphs: &mut self.glyphs, ts: Transform::from_scale(TX, TX), alpha: 1.0 };
             for x in at { c.text("DOOR", x, TH * 0.9, 9.0, warn, false); }
         } else if has_cam {
             // night cameras are dark: twice as bright on the sphere
@@ -726,7 +771,7 @@ impl Sphere {
         let front = rot.rem_euclid(TAU) / TAU * TW; // what faces you
         let led_style = get(f.st, &["ui", "sphere"]).as_str() == Some("led");
         self.prog = self.program(f);
-        self.paint_tex(self.prog, f, front, led_style);
+        crate::perf::time("sphere-tex", || self.paint_tex(self.prog, f, front, led_style));
         let twp = (TW * TX) as usize;
         let thp = (TH * TX) as usize;
         let td = self.tex.data();

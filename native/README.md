@@ -4,11 +4,18 @@ A parallel renderer for Omarchy Pulse. The web page stays the default (and is wh
 paints the same wallpaper natively on the GPU, with no browser underneath. It reads the same hub: the same
 `omarchy-pulse` service, the same token and the same `pulse.toml`.
 
-**Status: 0.9, experimental.** The port is being redone as a line-by-line translation of the published web page,
-so that it looks and moves as Pulse 1.8 does. Done this way so far: the panels, the clock and the ticker
-(pulse.css in rem: the same layout on every screen, at its full resolution), and the sphere (pulse.js's texture,
-face, programmes, gaze and LED map). The sky, the clouds, the city of where you live, the planes, the drones and
-the rest of the scene are still the earlier drawing, and are next.
+**Status: 0.10, experimental.** The port is being redone as a line-by-line translation of the published web page,
+so that it looks and moves as Pulse 1.8 does. Translated so far: the panels, the clock and the ticker (pulse.css in
+rem: the same layout on every screen, at its full resolution), INCOMING and the effect text, the sphere (texture,
+face, programmes, gaze, LED map), the far city and the skyline of where you live, the clouds, the planes (which go
+on flying between two fixes of the hub, at their speed and on their heading), the drones of your agents with their
+tags, your network's traffic on the floor, the car, the energy river, the pulse on the horizon and the vignette.
+The rest of the scene is still the earlier drawing, and is next.
+
+**CPU**: every letter on the sphere is drawn once and kept, gradients are small pictures kept on the GPU, the state
+is shared instead of copied, and a PC that cannot keep up gets fewer frames (pulse.js's cap: 70% of the frames,
+full speed again a minute later). `--fps N` (or `[pulse] fps`) sets the most; `motion = "reduced"` draws 4 a
+second. `PULSE_PERF=1` prints what each part of a frame costs.
 
 What it draws, from the same state the web page reads:
 

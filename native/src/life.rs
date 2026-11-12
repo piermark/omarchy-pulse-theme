@@ -148,39 +148,6 @@ pub fn datacenter(win: &mut Window, st: &Value, pal: &Pal, f: &Frame, marks: &mu
     }
 }
 
-/// The car in front of the city: its battery as a bar along its side, a bolt while it charges.
-pub fn car(win: &mut Window, st: &Value, pal: &Pal, f: &Frame, marks: &mut Vec<PlaneMark>) {
-    let Some(bat) = num(st, &["car", "battery"]) else { return };
-    let bat = bat as f32;
-    let (cw, ch) = (f.w * 0.085, f.h * 0.032);
-    let driving = get(st, &["car", "driving"]).as_bool().unwrap_or(false);
-    let cx = f.ox + f.w * 0.40 + if driving { ((f.t * 0.05).fract() - 0.5) * f.w * 0.2 } else { 0.0 };
-    let cy = f.oy + f.hz + f.h * 0.115;
-    let c = pal.accent2;
-    rect(win, cx - cw / 2.0, cy - ch * 0.5, cw, ch * 0.5, mix(pal.bg, c, 0.25), 1.0);
-    let mut roof = PathBuilder::fill();
-    roof.move_to(point(px(cx - cw * 0.28), px(cy - ch * 0.5)));
-    roof.line_to(point(px(cx - cw * 0.12), px(cy - ch * 1.05)));
-    roof.line_to(point(px(cx + cw * 0.16), px(cy - ch * 1.05)));
-    roof.line_to(point(px(cx + cw * 0.36), px(cy - ch * 0.5)));
-    roof.close();
-    if let Ok(p) = roof.build() {
-        win.paint_path(p, crate::palette::col(mix(pal.bg, c, 0.18), 1.0));
-    }
-    rect(win, cx - cw / 2.0, cy - ch * 0.5, cw, (f.u * 2.0).max(1.0), c, 0.95);
-    rect(win, cx - cw * 0.42, cy - ch * 0.22, cw * 0.84 * (bat / 100.0).clamp(0.0, 1.0), ch * 0.12, if bat < 20.0 { pal.crit } else { pal.ok }, 0.95);
-    for sx in [-0.3f32, 0.3] {
-        disc(win, cx + sx * cw, cy, ch * 0.3, [0.02, 0.02, 0.03], 1.0);
-        disc(win, cx + sx * cw, cy, ch * 0.14, pal.dim, 1.0);
-    }
-    glow(win, cx + cw * 0.52, cy - ch * 0.3, ch * 1.2, [1.0, 1.0, 0.9], 0.6);
-    let charging = text(st, &["car", "state"]).to_lowercase().contains("charg");
-    let mut line = format!("{bat:.0}% · {:.0} {}", num(st, &["car", "range"]).unwrap_or(0.0), text(st, &["car", "unit"]));
-    if charging {
-        line = format!("{line} · ⚡ {:.0} kW", num(st, &["car", "power"]).unwrap_or(0.0));
-    }
-    label(marks, f, cx - f.ox - cw * 0.45, cy - f.oy + ch * 0.45, pal.accent2, line);
-}
 
 /// The robots: your services, walking on the floor. Green and busy, amber when one restarts, red and still when down.
 pub fn robots(win: &mut Window, st: &Value, pal: &Pal, f: &Frame, marks: &mut Vec<PlaneMark>, private: bool) {
@@ -321,28 +288,8 @@ pub fn paint(win: &mut Window, st: &Value, pal: &Pal, f: &Frame, marks: &mut Vec
     let private = get(st, &["privacy"]).as_bool().unwrap_or(false) || get(st, &["screencast"]).as_bool().unwrap_or(false);
     trains(win, st, pal, f, marks, private);
     datacenter(win, st, pal, f, marks, private);
-    car(win, st, pal, f, marks);
     robots(win, st, pal, f, marks, private);
     candles(win, st, pal, f, marks, private);
-    // the energy of the house: what the Sun gives, what the grid gives or takes
-    if let Some(solar) = num(st, &["energy", "solar"]) {
-        let grid = num(st, &["energy", "grid"]).unwrap_or(0.0);
-        let load = num(st, &["energy", "load"]).unwrap_or(0.0);
-        label(marks, f, f.w * 0.505, f.hz + f.h * 0.118, pal.warn, format!("☀ {:.1} kW · home {:.1} kW · grid {:+.1} kW", solar / 1000.0, load / 1000.0, grid / 1000.0));
-    }
-    // the devices of your network: a light each along the kerb, brighter when one is new
-    let lan = list(st, &["lan"]);
-    for (i, d) in lan.iter().take(10).enumerate() {
-        let x = f.ox + f.w * (0.53 + 0.019 * i as f32);
-        let y = f.oy + f.hz + f.h * 0.165;
-        let new = get(d, &["new"]).as_bool().unwrap_or(false);
-        let c = if new { pal.warn } else { pal.accent };
-        glow(win, x, y, f.h * 0.008, c, if new { 0.6 + 0.4 * (f.t * 5.0).sin() } else { 0.7 });
-        disc(win, x, y, (f.u * 2.2).max(1.2), c, 1.0);
-        if !private && new {
-            label(marks, f, x - f.ox - f.w * 0.012, y - f.oy + f.h * 0.006, if new { pal.warn } else { pal.dim }, text(d, &["name"]).chars().take(10).collect());
-        }
-    }
     let up = num(st, &["updates", "n"]).unwrap_or(0.0);
     if up > 0.0 {
         let kernel = if get(st, &["updates", "kernel"]).as_bool().unwrap_or(false) { " · new kernel" } else { "" };
