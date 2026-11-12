@@ -7,7 +7,7 @@ use crate::draw::{c8, Label, PI, TAU};
 use crate::hub::{get, list, num, text};
 use crate::life::Frame;
 use crate::palette::{mix, Pal, C};
-use crate::scene::{sky_xy, Rand};
+use crate::scene::Rand;
 use gpui::Window;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -22,7 +22,6 @@ pub struct Mem {
     r: Rand,
     bolts: Vec<Bolt>,
     next_bolt: f64,
-    last_meteor: f64,
     flakes: Vec<[f32; 3]>,
     /// earthquakes: when, magnitude, from where (azimuth), near?
     quakes: Vec<(f64, f32, f32, bool)>,
@@ -48,7 +47,7 @@ pub struct Mem {
 
 impl Default for Mem {
     fn default() -> Self {
-        Mem { r: Rand::new(4711), bolts: Vec::new(), next_bolt: 0.0, last_meteor: 0.0, flakes: Vec::new(), quakes: Vec::new(), tsunamis: Vec::new(), gusts: Vec::new(), pollen: Vec::new(), infra: HashMap::new(), lift: 0.0, wifi: HashMap::new(), truck: HashMap::new(), ny_fx: 0.0, flare: -1e9, build: -1e9, ring: -1e9, ringing: false, asks: Vec::new(), flash: 0.0, storms: Vec::new() }
+        Mem { r: Rand::new(4711), bolts: Vec::new(), next_bolt: 0.0, flakes: Vec::new(), quakes: Vec::new(), tsunamis: Vec::new(), gusts: Vec::new(), pollen: Vec::new(), infra: HashMap::new(), lift: 0.0, wifi: HashMap::new(), truck: HashMap::new(), ny_fx: 0.0, flare: -1e9, build: -1e9, ring: -1e9, ringing: false, asks: Vec::new(), flash: 0.0, storms: Vec::new() }
     }
 }
 
@@ -111,8 +110,10 @@ pub fn event(mem: &mut Mem, kind: &str, raw: &Value, t: f64, f: Option<&Frame>) 
         "lightning" => {
             if let Some(f) = f {
                 let b = band(f);
-                let x = b.0 + (b.1 - b.0) * (0.2 + mem.r.next() * 0.6);
-                let pts = bolt_path(&mut mem.r, x, f, f.hz);
+                // a bolt asked for one place (a hall of the datacenter that went down) strikes its roof
+                let x = num(raw, &["x"]).map(|v| v as f32).unwrap_or_else(|| b.0 + (b.1 - b.0) * (0.2 + mem.r.next() * 0.6));
+                let to = num(raw, &["y"]).map(|v| v as f32).unwrap_or(f.hz);
+                let pts = bolt_path(&mut mem.r, x, f, to);
                 mem.bolts.push(Bolt { t, pts: Some(pts), x });
                 mem.flash = 1.0;
             }
@@ -136,45 +137,11 @@ pub fn shake(mem: &mut Mem, t: f64, h: f32) -> (f32, f32) {
     (dx.clamp(-h * 0.02, h * 0.02), dy.clamp(-h * 0.012, h * 0.012))
 }
 
-/// Over the sky, after the Sun and the Moon: an eclipse where it really is, the haze of poor air, a far storm's
-/// light, a solar flare; and the meteors of a shower.
-pub fn sky(win: &mut Window, st: &Value, pal: &Pal, f: &Frame, mem: &mut Mem, t: f64, labels: &mut Vec<Label>) {
+/// Over the sky, after the Sun and the Moon: the haze of poor air, a far storm's light, a solar flare.
+pub fn sky(win: &mut Window, st: &Value, pal: &Pal, f: &Frame, mem: &mut Mem, t: f64, _labels: &mut Vec<Label>) {
     let mut g = G { win, ox: f.ox, oy: f.oy };
     let (w, h, hz) = (f.w, f.h, f.hz);
-    let ec = get(st, &["season", "eclipse"]);
-    let cloud = (num(st, &["weather", "cloud"]).unwrap_or(0.0) as f32 / 100.0).clamp(0.0, 1.0);
-    if ec.is_object() {
-        let kind = text(ec, &["kind"]);
-        let r = h * 0.03;
-        if kind == "solar" {
-            let obsc = num(ec, &["obsc"]).unwrap_or(0.0) as f32;
-            if let (Some(az), Some(el)) = (num(st, &["night", "sun", "az"]), num(st, &["night", "sun", "el"])) {
-                if obsc > 0.0 && el > -1.0 {
-                    if let Some(p) = sky_xy(az as f32, el as f32, w, hz) {
-                        let a = (1.0 - cloud).powf(1.5);
-                        g.rect(0.0, 0.0, w, hz, [0.0, 0.0, 0.03], 0.72 * obsc.powi(8)); // totality: the day turns to night
-                        if obsc > 0.995 {
-                            g.glow(p.0, p.1, r * 4.5, c8(200, 215, 255), 0.5 * a); // the corona
-                            g.glow(p.0, p.1, r * 2.2, c8(235, 240, 255), 0.75 * a);
-                        }
-                        let (ox, oy) = (num(ec, &["off", "0"]).unwrap_or(0.0) as f32, 0.0f32);
-                        let off = get(ec, &["off"]).as_array().map(|o| (o.first().and_then(Value::as_f64).unwrap_or(0.0) as f32, o.get(1).and_then(Value::as_f64).unwrap_or(0.0) as f32)).unwrap_or((ox, oy));
-                        g.disc(p.0 + off.0 * r, p.1 - off.1 * r, r * num(ec, &["rm"]).unwrap_or(1.02) as f32, mix(pal.bg, [0.0, 0.0, 0.0], 0.6), 1.0);
-                        lab(labels, p.0, p.1 + r * 2.0, h / 62.0, pal.fg, 0.8, format!("eclipse · {:.0}%", obsc * 100.0), false);
-                    }
-                }
-            }
-        } else if kind == "lunar" && num(ec, &["pmag"]).unwrap_or(0.0) > 0.0 {
-            if let (Some(az), Some(el)) = (num(st, &["night", "moon", "az"]), num(st, &["night", "moon", "el"])) {
-                if let Some(p) = sky_xy(az as f32, el as f32, w, hz) {
-                    let umag = num(ec, &["umag"]).unwrap_or(0.0) as f32;
-                    // dimmer in the penumbra, copper red in the umbra
-                    g.disc(p.0, p.1, h * 0.034, c8(178, 64, 36), (umag * 1.2 + 0.1).clamp(0.0, 1.0) * 0.85 * (1.0 - 0.75 * cloud));
-                    lab(labels, p.0, p.1 + h * 0.05, h / 62.0, pal.fg, 0.8, if umag > 0.0 { format!("lunar eclipse · {:.0}%", umag.min(1.0) * 100.0) } else { "lunar eclipse · penumbra".to_string() }, false);
-                }
-            }
-        }
-    }
+    // (the eclipses are drawn with the Sun and the Moon, heavens.rs, as pulse.js does)
     if (t - mem.flare) < 2.5 {
         g.rect(0.0, 0.0, w, hz, pal.warn, 0.18 * (1.0 - ((t - mem.flare) / 2.5) as f32)); // a solar flare
     }
@@ -183,16 +150,6 @@ pub fn sky(win: &mut Window, st: &Value, pal: &Pal, f: &Frame, mem: &mut Mem, t:
     if haze > 0.0 {
         g.grad(0.0, hz - h * 0.35, w, h * 0.28, c8(150, 135, 110), 0.0, c8(150, 135, 110), haze);
         g.grad(0.0, hz - h * 0.07, w, h * 0.12, c8(150, 135, 110), haze, c8(150, 135, 110), haze * 0.6);
-    }
-    // a meteor shower: more shooting stars while it is dark and clear
-    let sh = get(st, &["night", "shower"]);
-    let dark = f.sky[0] * (1.0 - 0.85 * cloud);
-    if sh.is_object() && dark >= 0.3 {
-        let per_min = ((num(sh, &["zhr"]).unwrap_or(0.0) * num(sh, &["strength"]).unwrap_or(0.0) / 20.0 + 0.5) as f32).min(40.0);
-        if (t - mem.last_meteor) as f32 > 60.0 / per_min * (0.5 + mem.r.next()) {
-            mem.last_meteor = t;
-            mem.asks.push("shooting");
-        }
     }
     // thunderstorms: one over you throws bolts on the city; one around you lights the horizon from where it is
     let cells = list(st, &["storms", "cells"]);
@@ -388,6 +345,9 @@ pub fn ground(win: &mut Window, st: &Value, pal: &Pal, f: &Frame, mem: &mut Mem,
                 g.frame(bx, by, s, s * 0.88, u, c, 0.95);
                 g.rect(bx + s * 0.45, by, s * 0.1, s * 0.88, c, 0.9); // the tape
             }
+            if n > 0 {
+                lab(labels, x0, y0 + h * 0.018, (h * 0.012).round(), if kernel { pal.crit } else { fg }, 0.9, format!("{n} {}{}", if n == 1 { "update" } else { "updates" }, if kernel { " · new kernel" } else { "" }), true);
+            }
             if !news.is_empty() {
                 // Arch news that asks for manual intervention: a road sign with a blinking light
                 let (sx, sy) = (x0 + s * 4.2, y0 - s * 3.6);
@@ -395,6 +355,9 @@ pub fn ground(win: &mut Window, st: &Value, pal: &Pal, f: &Frame, mem: &mut Mem,
                 g.poly(&[(sx, sy - s * 1.1), (sx + s * 0.95, sy + s * 0.5), (sx - s * 0.95, sy + s * 0.5)], pal.warn, 0.95);
                 lab(labels, sx, sy - s * 0.45, s * 0.9, bg, 1.0, "!".into(), true);
                 if still || tf.rem_euclid(1.2) < 0.7 { g.glow(sx, sy - s * 1.3, s * 0.9, pal.crit, 0.9) }
+                if !private(st) {
+                    lab(labels, sx, y0 + h * 0.036, (h * 0.011).round(), pal.warn, 0.95, "news: read before you update".into(), true);
+                }
             }
         }
     }

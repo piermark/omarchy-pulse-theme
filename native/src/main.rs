@@ -27,10 +27,14 @@ mod picture;
 mod scene;
 mod ui;
 mod sound;
+mod rockets;
 mod sky;
 mod floor;
 mod sphere;
+mod street;
+mod weather;
 mod worlds;
+mod xf;
 
 use gpui::{
     canvas, div, layer_shell::*, point, prelude::*, px, size, App, Bounds, Context, FontWeight, LinuxWindowBackground, MouseButton, MouseDownEvent,
@@ -456,6 +460,7 @@ impl Pulse {
             world.cam = self.cam_bytes.clone();
             world.tz = local_offset_secs();
             world.simple = simple;
+            world.primary = self.primary;
             world.wall = own_wall && get(&st, &["ui", "wallpaper", "mode"]).as_str() != Some("panels");
             // the pointer the hub sees on the desktop, in this monitor's pixels (the wallpaper gets no motion under windows)
             if let Some(((cxp, cyp), at)) = cursor {

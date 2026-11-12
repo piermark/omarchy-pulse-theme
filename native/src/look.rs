@@ -212,22 +212,6 @@ pub fn light_path(win: &mut Window, l: &Light, f: &Frame, still: bool) {
     }
 }
 
-/// Where the rain lands a ring opens on the wet floor.
-pub fn rain_rings(win: &mut Window, f: &Frame, pal: &Pal, mm: f32, still: bool) {
-    if still {
-        return;
-    }
-    let n = (6.0 + mm.min(6.0) * 5.0) as usize;
-    for i in 0..n {
-        let ph = f.t * 1.3 + i as f32 * 0.37;
-        let (age, turn) = (ph.fract(), ph.floor());
-        let hsh = |k: f32| ((turn * 12.9898 + i as f32 * 78.233 + k).sin() * 43758.547).fract().abs();
-        let d = hsh(1.0).powf(1.5);
-        let (x, y) = (f.ox + hsh(2.0) * f.w, f.oy + f.hz + f.h * 0.01 + d * (f.h - f.hz) * 0.9);
-        let r = age * f.h * (0.006 + 0.022 * d);
-        draw::arc(win, x, y, r, r * 0.26, 0.0, TAU, 1.0, pal.fg, 0.30 * (1.0 - age) * (0.4 + 0.6 * d));
-    }
-}
 
 /// pulse.js ivyOn2(): ivy on a building of the city, higher the longer the PC stays on.
 pub fn ivy(win: &mut Window, pal: &Pal, f: &Frame, x: f32, y0: f32, hgt: f32, seed: f32, still: bool) {

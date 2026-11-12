@@ -287,3 +287,265 @@ impl Heavens {
         }
     }
 }
+
+/// A rocket of fireworks going up, or a spark of a burst (pulse.js launch() and burst()).
+struct Rocket {
+    x: f32,
+    y: f32,
+    vx: f32,
+    vy: f32,
+    ty: f32,
+    col: C,
+    col2: C,
+    big: bool,
+}
+struct Spark {
+    x: f32,
+    y: f32,
+    px: f32,
+    py: f32,
+    vx: f32,
+    vy: f32,
+    life: f32,
+    col: C,
+    dec: f32,
+    tw: bool,
+}
+
+/// The Starlink satellites (where each is drawn, gliding), the ISS and its trail, the fireworks.
+#[derive(Default)]
+pub struct Overhead {
+    sl: Vec<Option<(f32, f32)>>,
+    iss: Option<(f32, f32)>,
+    iss_trail: Vec<(f32, f32)>,
+    rockets: Vec<Rocket>,
+    sparks: Vec<Spark>,
+    queue: Vec<(f64, f32, f32, bool)>,
+    flash: f32,
+    seed: u64,
+}
+
+impl Overhead {
+    fn rand(&mut self) -> f32 {
+        self.seed = self.seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        ((self.seed >> 33) % 1_000_000) as f32 / 1_000_000.0
+    }
+
+    /// pulse.js fireworks(small, kind): rockets from the floor (four or eleven, a few tenths of a second apart), or
+    /// one burst over the core ("burst"). Positions in fractions of the band and of the screen.
+    pub fn fireworks(&mut self, now: f64, small: bool, burst: bool) {
+        if burst {
+            self.queue.push((now, -1.0, -1.0, true));
+            return;
+        }
+        let n = if small { 4 } else { 11 };
+        for i in 0..n {
+            let (rx, ry) = (self.rand(), 0.08 + self.rand() * 0.2);
+            self.queue.push((now + i as f64 * if small { 0.3 } else { 0.28 }, rx, ry, !small || i % 2 == 0));
+        }
+    }
+
+    /// burst(): a sphere of sparks, even speeds on a ring, a few faster ones.
+    fn burst(&mut self, x: f32, y: f32, col: C, col2: C, n: usize, spd: f32) {
+        self.flash = self.flash.max(0.5);
+        for i in 0..n {
+            let a = self.rand() * TAU;
+            let v = spd * if self.rand() < 0.8 { 0.85 + self.rand() * 0.15 } else { 0.3 + self.rand() * 0.5 };
+            let dec = 0.008 + self.rand() * 0.008;
+            let tw = self.rand() < 0.3;
+            self.sparks.push(Spark { x, y, px: x, py: y, vx: a.cos() * v, vy: a.sin() * v, life: 1.0, col: if i % 3 != 0 { col } else { col2 }, dec, tw });
+        }
+    }
+
+    /// A burst somewhere (a service back up, a drone landing, a push on a repo's roof): in screen pixels.
+    pub fn burst_at(&mut self, x: f32, y: f32, col: C, fg: C, n: usize, spd: f32) {
+        self.burst(x, y, col, fg, n, spd);
+    }
+
+    /// drawFireworks(): the rockets and their trails, sparks with gravity, some glittering, the sky lit a moment.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_fireworks(&mut self, win: &mut Window, pal: &Pal, ox: f32, oy: f32, w: f32, h: f32, now: f64, band: (f32, f32), frames: f32) {
+        let cols = [pal.accent, pal.accent2, pal.ok, pal.warn, pal.fg];
+        let due: Vec<(f64, f32, f32, bool)> = self.queue.iter().filter(|q| q.0 <= now).copied().collect();
+        self.queue.retain(|q| q.0 > now);
+        for (_, rx, ry, big) in due {
+            if rx < 0.0 {
+                self.burst(ox + w / 2.0, oy + h * 0.745 - h * 0.18, pal.ok, pal.fg, 70, h * 0.006);
+                continue;
+            }
+            let (c1, c2) = (cols[((self.rand() * 5.0) as usize).min(4)], cols[((self.rand() * 5.0) as usize).min(4)]);
+            let vx = (self.rand() - 0.5) * w * 0.0008;
+            let vy = -h * (0.024 + self.rand() * 0.006);
+            self.rockets.push(Rocket { x: ox + band.0 + rx * (band.1 - band.0), y: oy + h * 0.95, vx, vy, ty: oy + h * ry, col: c1, col2: c2, big });
+        }
+        if self.rockets.is_empty() && self.sparks.is_empty() && self.flash <= 0.02 {
+            return;
+        }
+        let grav = h * 0.00018;
+        let mut bursts = Vec::new();
+        for r in self.rockets.iter_mut() {
+            r.x += r.vx * frames;
+            r.y += r.vy * frames;
+            r.vy += grav * 0.6 * frames;
+            // the rocket and its trail
+            let (tx, ty) = (r.x - r.vx * 8.0, r.y - r.vy * 8.0);
+            for k in 0..4 {
+                let (u0, u1) = (k as f32 / 4.0, (k + 1) as f32 / 4.0);
+                draw::line(win, &[(r.x + (tx - r.x) * u0, r.y + (ty - r.y) * u0), (r.x + (tx - r.x) * u1, r.y + (ty - r.y) * u1)], (h / 350.0).max(1.5), mix(pal.fg, r.col, (u0 + u1) / 2.0), 1.0 - (u0 + u1) / 2.0);
+            }
+            if r.y <= r.ty || r.vy >= 0.0 {
+                bursts.push((r.x, r.y, r.col, r.col2, r.big));
+            }
+        }
+        self.rockets.retain(|r| !(r.y <= r.ty || r.vy >= 0.0));
+        for (x, y, c1, c2, big) in bursts {
+            self.burst(x, y, c1, c2, if big { 140 } else { 80 }, h * if big { 0.0105 } else { 0.0075 });
+        }
+        let lw = (h / 420.0).max(1.2);
+        let mut glitter = Vec::new();
+        for _ in 0..self.sparks.len() {
+            glitter.push(self.rand() < 0.5);
+        }
+        for (i, p) in self.sparks.iter_mut().enumerate() {
+            p.px = p.x;
+            p.py = p.y;
+            p.x += p.vx * frames;
+            p.y += p.vy * frames;
+            let damp = 0.975f32.powf(frames);
+            p.vx *= damp;
+            p.vy = p.vy * damp + grav * frames;
+            p.life -= p.dec * frames;
+            if p.life <= 0.0 {
+                continue;
+            }
+            let al = (p.life * 1.4).min(1.0) * if p.tw && p.life < 0.5 { if glitter[i] { 1.0 } else { 0.2 } } else { 1.0 };
+            // a short streak from where it was (the canvas strokes from two frames back)
+            let (sx, sy) = (p.x - (p.x - p.px) * 2.0, p.y - (p.y - p.py) * 2.0);
+            draw::line(win, &[(sx, sy), (p.x, p.y)], lw, mix(p.col, pal.fg, if p.life > 0.8 { 0.6 } else { 0.0 }), al);
+        }
+        self.sparks.retain(|p| p.life > 0.0);
+        if self.flash > 0.02 {
+            crate::scene::rect(win, ox, oy, w, h, pal.fg, self.flash * 0.06); // the sky lights up
+            self.flash *= 0.85f32.powf(frames);
+        }
+    }
+
+    /// drawStarlinkFine(): the satellites really in your sky and lit by the Sun, above 10°; they glide to where they
+    /// are, a faint thread joins those that fly in a row, each one glints, the first is the brightest, and the tag says
+    /// how many and which way they go (over the highest one whose tag is clear of the panels and the sphere).
+    #[allow(clippy::too_many_arguments)]
+    pub fn starlink(&mut self, win: &mut Window, cx: &mut gpui::App, font: &gpui::SharedString, st: &Value, pal: &Pal, ox: f32, oy: f32, w: f32, h: f32, t: f32, frames: f32, boxes: &[[f32; 4]], still: bool) {
+        let ss = list(st, &["starlink", "sats"]);
+        if ss.is_empty() {
+            self.sl.clear();
+            return;
+        }
+        let hz = h * 0.745;
+        let u1 = h / 1080.0;
+        self.sl.resize(ss.len(), None);
+        let mut pts: Vec<(f32, f32, usize)> = Vec::new();
+        let ease = 1.0 - (1.0f32 - 0.025).powf(frames.max(0.05));
+        for (i, s) in ss.iter().enumerate() {
+            let el = num(s, &["el"]).unwrap_or(-90.0) as f32;
+            let p = if el >= 10.0 { sky_xy(num(s, &["az"]).unwrap_or(0.0) as f32, el, w, hz) } else { None };
+            let Some(p) = p else { self.sl[i] = None; continue };
+            let mut q = match self.sl[i] { Some(q) if (q.0 - p.0).abs() <= w * 0.2 && !still => q, _ => p };
+            q.0 += (p.0 - q.0) * ease;
+            q.1 += (p.1 - q.1) * ease;
+            self.sl[i] = Some(q);
+            pts.push((q.0, q.1, i));
+        }
+        if pts.is_empty() {
+            return;
+        }
+        let (_, sky, _) = crate::sky::darkness(st);
+        let vis = sky.max(0.5);
+        let near = h * 0.09;
+        for i in 1..pts.len() {
+            let (dx, dy) = (pts[i].0 - pts[i - 1].0, pts[i].1 - pts[i - 1].1);
+            if pts[i].2 == pts[i - 1].2 + 1 && dx * dx + dy * dy < near * near {
+                draw::line(win, &[(ox + pts[i - 1].0, oy + pts[i - 1].1), (ox + pts[i].0, oy + pts[i].1)], (u1 * 1.2).max(1.0), pal.fg, 0.20 * vis);
+            }
+        }
+        for (i, p) in pts.iter().enumerate() {
+            let lead = if i == 0 { 1.5 } else { 1.0 };
+            let a = vis * (0.75 + 0.25 * (t * 2.6 + i as f32 * 0.9).sin()) * if i == 0 { 1.0 } else { 0.85 };
+            let s = u1 * 3.0 * lead;
+            let (x, y) = (ox + p.0, oy + p.1);
+            radial(win, x, y, 0.0, s * 3.2, 1.0, pal.fg, &[(0.0, 0.55 * a), (1.0, 0.0)]);
+            draw::arc_fill(win, x, y, s * 0.55, s * 0.55, 0.0, 0.0, TAU, pal.fg, a);
+            crate::scene::rect(win, x - s * 2.2, y - u1 * 0.5, s * 4.4, u1.max(1.0), pal.fg, a); // a glint
+            crate::scene::rect(win, x - u1 * 0.5, y - s * 1.5, u1.max(1.0), s * 3.0, pal.fg, a);
+        }
+        if get(st, &["screencast"]).as_bool().unwrap_or(false) {
+            return;
+        }
+        let n = pts.len();
+        let hd = if n > 1 { (pts[0].0 - pts[n - 1].0, pts[0].1 - pts[n - 1].1) } else { (0.0, 0.0) };
+        let arrow = if hd.0.abs() + hd.1.abs() < h * 0.01 {
+            ""
+        } else if hd.1.abs() > hd.0.abs() * 2.0 {
+            if hd.1 < 0.0 { " ↑" } else { " ↓" }
+        } else if hd.1 < -hd.0.abs() * 0.4 {
+            if hd.0 > 0.0 { " ↗" } else { " ↖" }
+        } else if hd.1 > hd.0.abs() * 0.4 {
+            if hd.0 > 0.0 { " ↘" } else { " ↙" }
+        } else if hd.0 > 0.0 {
+            " →"
+        } else {
+            " ←"
+        };
+        let (f1, f2) = ((h * 0.0135).round(), (h * 0.0118).round());
+        let l1 = format!("STARLINK{}", if n > 3 { " TRAIN" } else { "" });
+        let l2 = format!("{n} {}{arrow}", if n == 1 { "satellite" } else { "satellites" });
+        let (w1, w2) = (draw::measure(win, font, &l1, f1, 700.0), draw::measure(win, font, &l2, f2, 500.0));
+        let (pw, ph) = (w1.max(w2) + h * 0.02, f1 + f2 * 1.45 + h * 0.012);
+        let mut sorted = pts.clone();
+        sorted.sort_by(|a, b| a.1.total_cmp(&b.1));
+        // starlinkLabelAt(): the first satellite whose tag is clear of every panel and of the sphere
+        let r = h * 0.17;
+        let mut all = boxes.to_vec();
+        all.push([w / 2.0 - r, h * 0.745 - r * 2.0, r * 2.0, r * 2.0]);
+        let at = sorted.iter().map(|p| (p.0 + h * 0.01, p.1 - h * 0.012)).find(|(x, y)| !all.iter().any(|b| *x < b[0] + b[2] && x + pw > b[0] && *y > b[1] && y - ph < b[1] + b[3]));
+        let Some((px0, py0)) = at else { return };
+        let (px0, py0) = (ox + px0, oy + py0 - ph);
+        crate::scene::rect(win, px0, py0, pw, ph, pal.bg, 0.78);
+        crate::scene::rect(win, px0, py0, (h / 500.0).max(2.0), ph, pal.accent, 0.9);
+        draw::text(win, cx, font, &l1, px0 + h * 0.011, py0 + h * 0.006 + f1 * 0.85, f1, 700.0, pal.fg, 0.97, -1);
+        draw::text(win, cx, font, &l2, px0 + h * 0.011, py0 + h * 0.006 + f1 * 0.85 + f2 * 1.45, f2, 500.0, pal.accent, 0.95, -1);
+    }
+
+    /// drawISS(): the station when it really passes over you, its trail, its light (dimmer in the Earth's shadow).
+    #[allow(clippy::too_many_arguments)]
+    pub fn iss(&mut self, win: &mut Window, cx: &mut gpui::App, font: &gpui::SharedString, st: &Value, pal: &Pal, ox: f32, oy: f32, w: f32, h: f32, frames: f32) {
+        let iss = get(st, &["space", "iss"]);
+        let (Some(az), Some(el)) = (num(iss, &["az"]), num(iss, &["el"])) else {
+            self.iss = None;
+            self.iss_trail.clear();
+            return;
+        };
+        let hz = h * 0.745;
+        let tx = w / 2.0 + ((az as f32 - 180.0) / 90.0).clamp(-1.05, 1.05) * w * 0.44;
+        let ty = hz - h * 0.05 - (el as f32 / 90.0) * hz * 0.6;
+        let k = 1.0 - (1.0f32 - 0.08).powf(frames.max(0.05));
+        let p = self.iss.map(|q| (q.0 + (tx - q.0) * k, q.1 + (ty - q.1) * k)).unwrap_or((tx, ty));
+        self.iss = Some(p);
+        self.iss_trail.push(p);
+        if self.iss_trail.len() > 60 {
+            self.iss_trail.remove(0);
+        }
+        let n = self.iss_trail.len();
+        for i in 1..n {
+            let (a, b) = (self.iss_trail[i - 1], self.iss_trail[i]);
+            draw::line(win, &[(ox + a.0, oy + a.1), (ox + b.0, oy + b.1)], (h / 600.0).max(1.0), pal.fg, 0.4 * i as f32 / n as f32);
+        }
+        let lit = get(iss, &["lit"]).as_bool() != Some(false);
+        let (x, y) = (ox + p.0, oy + p.1);
+        let c = if lit { pal.fg } else { pal.accent2 };
+        radial(win, x, y, 0.0, h * 0.03, 1.0, c, &[(0.0, 0.95), (0.15, 0.5), (1.0, 0.0)]);
+        crate::scene::rect(win, x - h / 220.0, y - h / 1400.0, h / 110.0, h / 700.0, pal.fg, 1.0); // the solar wings
+        crate::scene::rect(win, x - h / 1400.0, y - h / 450.0, h / 700.0, h / 225.0, pal.fg, 1.0);
+        let alt = num(iss, &["alt"]).map(|a| format!("{a}")).unwrap_or_default();
+        draw::text(win, cx, font, &format!("ISS · {alt} km · {}°", el.round()), x + h * 0.02, y - h * 0.012, (h * 0.014).round(), 600.0, pal.fg, 0.85, -1);
+    }
+}

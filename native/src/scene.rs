@@ -34,17 +34,11 @@ pub struct Building {
 /// What is made once and kept: the city, the stars, the rain.
 pub struct World {
     pub city: Vec<Building>,
-    pub drops: Vec<(f32, f32, f32, f32)>,
     pub last_t: f64,
-    /// where each Starlink satellite is drawn: it glides to where it really is
-    pub sl: Vec<Option<(f32, f32)>>,
-    pub iss: Option<(f32, f32)>,
-    pub iss_trail: Vec<(f32, f32)>,
     /// rockets on their way up: (when it left, its name, a Starship?)
-    pub liftoffs: Vec<(f64, String, bool)>,
+    pub rockets: crate::rockets::Rockets,
     /// fireworks: (when, x, y, seed, small)
     pub bursts: Vec<(f64, f32, f32, u64, bool)>,
-    pub flash: f64,
     /// the words of the last effect, and when
     pub say: Option<(f64, String)>,
     seed: u64,
@@ -76,6 +70,12 @@ pub struct World {
     /// the free band between the side columns, where the city stands (pulse.js band)
     pub band: (f32, f32),
     pub heavens: crate::heavens::Heavens,
+    pub street: crate::street::Street,
+    pub overhead: crate::heavens::Overhead,
+    pub pushed: Vec<String>,
+    pub weather: crate::weather::Weather,
+    /// the first monitor: the banners and the tips fly there only
+    pub primary: bool,
     pub git_flash: std::collections::HashMap<String, f32>,
     pub git_fail: std::collections::HashMap<String, f32>,
     /// where each repo's roof is (pulse.js gitPos): a push bursts there
@@ -132,31 +132,29 @@ impl World {
         if kind == "commit" || kind == "push" {
             // pulse.js: the repo's tower flashes and a new floor comes down
             let name = text.split(" · ").next().unwrap_or("").to_string();
+            if kind == "push" {
+                self.pushed.push(name.clone()); // pulse.js: sparks over that repo's roof
+            }
             self.git_flash.insert(name, t as f32);
         }
         self.seed = self.seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-        let mut r = Rand::new(self.seed);
         match kind {
             "launch" => {
                 let name = text.split(" · liftoff").next().unwrap_or(text).to_string();
                 let big = name.to_lowercase().contains("starship");
-                self.liftoffs.push((t, name, big));
+                self.rockets.launch(t as f32, name, big);
             }
             "lightning" => {}
             "shooting" => self.heavens.fx("shooting"),
-            "banner" | "tip" | "chime" | "text" | "say" | "flare" | "quake" | "tsunami" | "build" | "doorbell" | "train" | "summary" | "starlink" | "car" | "push" | "commit" | "iss" => {
+            "banner" | "tip" => self.street.fx(kind, text, t, &[]),
+            "chime" | "text" | "say" | "flare" | "quake" | "tsunami" | "build" | "doorbell" | "train" | "summary" | "starlink" | "car" | "push" | "commit" | "iss" => {
                 if kind == "iss" {
                     self.heavens.fx("iss");
                 }
             }
-            _ => {
-                let n = if small { 2 } else { 6 };
-                for i in 0..n {
-                    self.bursts.push((t + i as f64 * 0.45, 0.3 + r.next() * 0.4, 0.14 + r.next() * 0.26, (r.next() * 1e9) as u64, small));
-                }
-            }
+            _ => self.overhead.fireworks(t, small, kind == "burst"),
         }
-        if !text.is_empty() {
+        if !text.is_empty() && kind != "banner" && kind != "tip" {
             self.say = Some((t, text.chars().take(60).collect()));
         }
     }
@@ -176,8 +174,7 @@ impl World {
                 x += w + r.next() * 0.004;
             }
         }
-        let drops = (0..900).map(|_| (r.next(), r.next(), 0.5 + r.next() * 0.5, r.next())).collect();
-        World { city, drops, last_t: 0.0, sl: Vec::new(), iss: None, iss_trail: Vec::new(), liftoffs: Vec::new(), bursts: Vec::new(), flash: 0.0, say: None, seed: 42, rings: Vec::new(), more: Default::default(), code: Default::default(), labels: Vec::new(), hits: Vec::new(), centre: None, pointer: None, wall: false, has_cam: false, simple: false, last: None, beats: Vec::new(), heights: Vec::new(), audio: Vec::new(), tz: 0, prog: "face", alert_at: -1e9, view: None, sounds: Vec::new(), back: Default::default(), back_img: None, ball: Default::default(), ball_img: None, gaze: (0.0, 0.0), hm: String::new(), date_short: String::new(), typing: false, woke_at: -1e9, car_at: -1e9, cam: None, door: None, alert_env: 0.0, desk_empty: true, sky: Default::default(), floor: Default::default(), drones: Default::default(), focus_k: 0.0, band: (0.0, 0.0), heavens: Default::default(), git_flash: Default::default(), git_fail: Default::default(), git_pos: Vec::new() }
+        World { city, last_t: 0.0, rockets: Default::default(), bursts: Vec::new(), say: None, seed: 42, rings: Vec::new(), more: Default::default(), code: Default::default(), labels: Vec::new(), hits: Vec::new(), centre: None, pointer: None, wall: false, has_cam: false, simple: false, last: None, beats: Vec::new(), heights: Vec::new(), audio: Vec::new(), tz: 0, prog: "face", alert_at: -1e9, view: None, sounds: Vec::new(), back: Default::default(), back_img: None, ball: Default::default(), ball_img: None, gaze: (0.0, 0.0), hm: String::new(), date_short: String::new(), typing: false, woke_at: -1e9, car_at: -1e9, cam: None, door: None, alert_env: 0.0, desk_empty: true, sky: Default::default(), floor: Default::default(), drones: Default::default(), focus_k: 0.0, band: (0.0, 0.0), heavens: Default::default(), street: Default::default(), overhead: Default::default(), pushed: Vec::new(), weather: Default::default(), primary: true, git_flash: Default::default(), git_fail: Default::default(), git_pos: Vec::new() }
     }
 }
 
@@ -371,7 +368,6 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
     let dt = if still { 0.0 } else { dt };
     let [wn, wt, wd] = sky_weights(st);
     let cloud = (num(st, &["weather", "cloud"]).unwrap_or(0.0) as f32 / 100.0).clamp(0.0, 1.0);
-    let rain = num(st, &["weather", "rain"]).unwrap_or(0.0) as f32;
     let code = num(st, &["weather", "code"]).unwrap_or(0.0) as i32;
     let wind = num(st, &["weather", "wind"]).unwrap_or(0.0) as f32;
     let wind_dir = num(st, &["weather", "windDir"]).unwrap_or(270.0) as f32;
@@ -436,6 +432,7 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
     }
     if sky_on {
         world.heavens.front(win, cx, font, st, pal, ox, oy, w, h, tf);
+        world.overhead.starlink(win, cx, font, st, pal, ox, oy, w, h, tf, dt * 20.0, ui_boxes, still_l);
     }
     if sky_on {
         crate::extra::sky(win, st, pal, &frame, &mut world.more, t, &mut world.labels);
@@ -506,6 +503,11 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
     if !bare && !calm && !orbit {
         // pulse.js drawGit(): your repos beside the core, then the towers of the cores in front of them
         world.git_pos = crate::look::git(win, cx, font, st, pal, &frame, r_core, &world.git_flash, &mut world.git_fail, real_city, still_l, hide);
+        for name in std::mem::take(&mut world.pushed) {
+            if let Some(p) = world.git_pos.iter().find(|p| p.0 == name) {
+                world.overhead.burst_at(p.1, p.2, pal.accent, pal.fg, 70, h * 0.006);
+            }
+        }
         let inner = r_core * if sphere { 1.08 } else { 1.18 };
         let want = if get(st, &["focus"]).is_object() { 1.0 } else { 0.0 };
         world.focus_k += (want - world.focus_k) * if still_l { 1.0 } else { (0.02 * dt * 20.0).min(1.0) };
@@ -665,9 +667,6 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
         crate::look::light_path(win, l, &frame, still_l); // its light on the floor
     }
 
-    if !bare && !calm && !simple {
-        crate::life::paint(win, st, pal, &frame, &mut marks);
-    }
     if !bare && !simple {
         crate::extra::ground(win, st, pal, &frame, &mut world.more, t, &mut world.labels, kind);
         crate::extra::net(win, st, pal, &frame, &mut world.more, t, &mut world.labels);
@@ -677,6 +676,24 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
             world.floor.river(win, cx, font, st, pal, ox, oy, w, h, dt * 20.0, still_l);
             world.floor.cars(win, cx, font, st, pal, ox, oy, w, h, tf, bass, kind);
             crate::floor::car(win, cx, font, st, pal, ox, oy, h, tf, world.band, (t - world.car_at) as f32, kind);
+        }
+        if !simple && !calm && !orbit && !noir {
+            // pulse.js: the datacenter, the trains, the robots, the candles
+            let share = get(st, &["privacy"]).as_bool().unwrap_or(false) || get(st, &["screencast"]).as_bool().unwrap_or(false);
+            let band = world.band;
+            world.street.datacenter(win, cx, font, st, pal, ox, oy, w, h, tf, t, band, wn.max(wt), still_l);
+            for (x, y, words) in std::mem::take(&mut world.street.zaps) {
+                crate::extra::event(&mut world.more, "lightning", &serde_json::json!({ "x": x - ox, "y": y - oy }), t, world.last.as_ref());
+                world.say = Some((t, words));
+                world.sounds.push("thunder");
+            }
+            for (x, y) in std::mem::take(&mut world.street.sparks) {
+                world.seed = world.seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                world.bursts.push((t, (x - ox) / w, (y - oy) / h, world.seed >> 20, true));
+            }
+            world.street.trains(win, cx, font, st, pal, ox, oy, h, tf, band, share);
+            world.street.robots(win, cx, font, st, pal, ox, oy, h, tf, band, dt * 20.0, share);
+            world.street.candles(win, cx, font, st, pal, ox, oy, w, h, tf, still_l, share);
         }
     }
     if !bare {
@@ -691,8 +708,6 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
     if noir {
         crate::modes::noir_city(win, st, pal, &frame, &mut marks);
     }
-    crate::life::balloon(win, st, pal, &frame, &mut marks);
-    crate::life::banner(win, st, pal, &frame, &mut marks);
     // the line of the horizon: the machine's pulse, livelier with the CPU (noir has its street instead)
     let _ = cpu;
     let cpu = (num(st, &["sys", "cpu"]).unwrap_or(0.0) as f32 / 100.0).clamp(0.0, 1.0);
@@ -735,200 +750,31 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
         }
     }
 
-    // ---- rain as heavy as it really is; far drops short and faint, near ones long and bright
-    let wet = (51..=67).contains(&code) || (80..=82).contains(&code) || code >= 95 || rain > 0.0;
-    let snow = (71..=77).contains(&code) || code == 85 || code == 86;
-    if wet && !snow && polish {
-        crate::look::rain_rings(win, &frame, pal, rain, still_l);
+    // ---- the real weather: rain with depth and its rings, snow, hail, fog (pulse.js draw())
+    {
+        world.weather.paint(win, st, pal, ox, oy, w, h, tf, t, dt * 20.0, polish, still_l);
     }
-    if wet && !snow {
-        let n = ((80.0 + rain * 220.0) as usize).min(world.drops.len());
-        let slant = (0.28 + vx * 4.0).clamp(-0.6, 0.6); // pulse.js leans its rain; the wind leans it more
-        let mut far = PathBuilder::stroke(px((u * 1.0).max(1.0)));
-        let mut near_p = PathBuilder::stroke(px((u * 1.8).max(1.2)));
-        for d in world.drops.iter().take(n) {
-            let near = d.2 > 0.78;
-            let len = h * if near { 0.05 + 0.04 * d.3 } else { 0.014 + 0.016 * d.3 };
-            let reach = if near { 1.05 } else { HORIZON + 0.02 };
-            let y = ((d.1 + tf * if near { 1.5 } else { 0.7 + d.2 * 0.5 }) % 1.0) * h * reach;
-            let x = ((d.0 * 1.3 - 0.15) * w + slant * (h * reach - y)).rem_euclid(w * 1.1);
-            let b = if near { &mut near_p } else { &mut far };
-            b.move_to(point(px(ox + x), px(oy + y)));
-            b.line_to(point(px(ox + x - slant * len), px(oy + y + len)));
-        }
-        let drop_c = mix(pal.fg, pal.accent, 0.35);
-        if let Ok(path) = far.build() {
-            win.paint_path(path, col(drop_c, 0.22));
-        }
-        if let Ok(path) = near_p.build() {
-            win.paint_path(path, col(drop_c, 0.38));
-        }
-    } else if snow {
-        for d in world.drops.iter().take(260) {
-            let y = ((d.1 + tf * 0.045 * (0.5 + d.2)) % 1.0) * h;
-            let x = ((d.0 + (tf * 0.4 + d.3 * 6.28).sin() * 0.008).rem_euclid(1.0)) * w;
-            disc(win, ox + x, oy + y, (u * (1.0 + d.2 * 1.6)).max(1.0), [0.95, 0.97, 1.0], 0.55 + 0.3 * d.2);
-        }
+    // ---- pulse.js drawISS(), drawFireworks(): the station, then the fireworks (and every burst of sparks)
+    if sky_on {
+        world.overhead.iss(win, cx, font, st, pal, ox, oy, w, h, dt * 20.0);
     }
-
-    let privacy = get(st, &["privacy"]).as_bool().unwrap_or(false) || get(st, &["screencast"]).as_bool().unwrap_or(false);
-    // ---- the ISS when it is over you: a bright point with its panels, and where it has just been
-    match (num(st, &["space", "iss", "az"]), num(st, &["space", "iss", "el"])) {
-        (Some(az), Some(el)) => {
-            let tx = w / 2.0 + ((az as f32 - 180.0) / 90.0).clamp(-1.05, 1.05) * w * 0.44;
-            let ty = hz - h * 0.05 - (el as f32 / 90.0) * hz * 0.6;
-            let p = world.iss.map(|q| (q.0 + (tx - q.0) * 0.08, q.1 + (ty - q.1) * 0.08)).unwrap_or((tx, ty));
-            world.iss = Some(p);
-            world.iss_trail.push(p);
-            if world.iss_trail.len() > 60 {
-                world.iss_trail.remove(0);
-            }
-            let mut tr = PathBuilder::stroke(px((u * 1.5).max(1.0)));
-            for (i, q) in world.iss_trail.iter().enumerate() {
-                let pt = point(px(ox + q.0), px(oy + q.1));
-                if i == 0 { tr.move_to(pt) } else { tr.line_to(pt) }
-            }
-            if world.iss_trail.len() > 2 {
-                if let Ok(path) = tr.build() {
-                    win.paint_path(path, col(pal.fg, 0.3));
-                }
-            }
-            let s = h * 0.01;
-            glow(win, ox + p.0, oy + p.1, s * 3.0, [1.0, 1.0, 0.9], 0.9);
-            rect(win, ox + p.0 - s * 1.6, oy + p.1 - s * 0.25, s * 3.2, s * 0.5, pal.accent, 0.9);
-            disc(win, ox + p.0, oy + p.1, s * 0.5, [1.0, 1.0, 1.0], 1.0);
-            let alt = num(st, &["space", "iss", "alt"]).unwrap_or(420.0);
-            marks.push(PlaneMark { c: pal.warn, x: (p.0 + s * 2.5).clamp(w * 0.245, w * 0.62), y: p.1 - s * 3.0, title: "ISS".into(), line: format!("{alt:.0} km · {el:.0}° up") });
-        }
-        _ => {
-            world.iss = None;
-            world.iss_trail.clear();
-        }
+    for b in std::mem::take(&mut world.bursts) {
+        // a burst asked by the scene (a drone landing, a service back up): sparks there
+        world.overhead.burst_at(ox + b.1 * w, oy + b.2 * h, pal.ok, pal.fg, if b.4 { 40 } else { 70 }, h * if b.4 { 0.004 } else { 0.006 });
     }
-    // ---- the Starlink train really in your sky: it glides, a thread joins the row, each one glints
-    let sats = list(st, &["starlink", "sats"]);
-    world.sl.resize(sats.len(), None);
-    let mut pts: Vec<(f32, f32)> = Vec::new();
-    for (i, sat) in sats.iter().enumerate() {
-        let (Some(az), Some(el)) = (sat.get("az").and_then(Value::as_f64), sat.get("el").and_then(Value::as_f64)) else { world.sl[i] = None; continue };
-        if el < 10.0 {
-            world.sl[i] = None;
-            continue;
-        }
-        let Some(p) = sky_xy(az as f32, el as f32, w, hz) else { world.sl[i] = None; continue };
-        let q = match world.sl[i] {
-            Some(q) if (q.0 - p.0).abs() < w * 0.2 => (q.0 + (p.0 - q.0) * 0.025, q.1 + (p.1 - q.1) * 0.025),
-            _ => p,
-        };
-        world.sl[i] = Some(q);
-        pts.push(q);
-    }
-    if !pts.is_empty() {
-        let mut thread = PathBuilder::stroke(px((u * 1.0).max(1.0)));
-        for (i, q) in pts.iter().enumerate() {
-            let pt = point(px(ox + q.0), px(oy + q.1));
-            if i == 0 { thread.move_to(pt) } else { thread.line_to(pt) }
-        }
-        if pts.len() > 1 {
-            if let Ok(path) = thread.build() {
-                win.paint_path(path, col(pal.fg, 0.22));
-            }
-        }
-        for (i, q) in pts.iter().enumerate() {
-            let glint = 0.6 + 0.4 * (tf * 3.0 - i as f32 * 0.7).sin().max(0.0);
-            let s = h * if i == 0 { 0.0042 } else { 0.003 };
-            glow(win, ox + q.0, oy + q.1, s * 3.5, [1.0, 1.0, 1.0], 0.5 * glint);
-            disc(win, ox + q.0, oy + q.1, s, [1.0, 1.0, 1.0], glint);
-        }
-        let head = pts[0];
-        marks.push(PlaneMark { c: pal.fg, x: (head.0 + h * 0.02).clamp(w * 0.245, w * 0.62), y: head.1 - h * 0.05, title: "STARLINK TRAIN".into(), line: format!("{} satellites", pts.len()) });
-    }
-    // ---- shooting stars, fireworks and lightning: the hub's effects
-    world.bursts.retain(|b| t - b.0 < 2.6);
-    for b in &world.bursts {
-        let age = (t - b.0) as f32;
-        if age < 0.0 {
-            continue;
-        }
-        let k = age / 2.6;
-        let mut r = Rand::new(b.3);
-        let c = [pal.accent, pal.accent2, pal.warn, pal.ok][(b.3 % 4) as usize];
-        let (bx, by) = (ox + b.1 * w, oy + b.2 * h);
-        let reach = h * if b.4 { 0.07 } else { 0.15 } * (1.0 - (1.0 - k).powi(3));
-        for _ in 0..if b.4 { 40 } else { 90 } {
-            let (a, sp) = (r.next() * 6.283, 0.35 + r.next() * 0.65);
-            let (x, y) = (bx + a.cos() * reach * sp, by + a.sin() * reach * sp + k * k * h * 0.05);
-            disc(win, x, y, (u * (2.6 - 1.8 * k)).max(1.0), mix(c, [1.0, 1.0, 1.0], (1.0 - k) * 0.6), (1.0 - k).powf(1.5));
-        }
-        glow(win, bx, by, h * 0.12 * (1.0 - k), c, 0.5 * (1.0 - k * 3.0).max(0.0));
-    }
-    let fl = (t - world.flash) as f32;
-    if world.flash > 0.0 && fl < 0.5 {
-        rect(win, ox, oy, w, h, [1.0, 1.0, 1.0], 0.35 * (1.0 - fl / 0.5) * if (fl * 20.0) as i32 % 2 == 0 { 1.0 } else { 0.4 });
-    }
-    // ---- a real launch: a rocket you can recognise climbs from your horizon (Pulse 1.8's liftoff)
-    world.liftoffs.retain(|l| t - l.0 < 26.0);
-    for (li, l) in world.liftoffs.iter().enumerate() {
-        let age = (t - l.0) as f32;
-        let big = l.2;
-        let lx = ox + w * (0.66 + 0.05 * li as f32);
-        let rh = h * if big { 0.075 } else { 0.058 };
-        let rw = rh * if big { 0.13 } else { 0.085 };
-        let climb = h * 0.0052 * age * age + h * 0.004 * age;
-        let ry = oy + hz - climb; // the base of the rocket
-        let lean = (age - 6.0).max(0.0) * rw * 0.5;
-        let x = lx - lean;
-        // pad smoke, rolling outwards
-        if age < 9.0 {
-            for i in 0..9 {
-                let k = (age / 9.0).min(1.0);
-                let sx = (i as f32 - 4.0) * rh * 0.22 * (1.0 + age * 0.35);
-                disc(win, lx + sx, oy + hz - rh * 0.05, rh * (0.16 + 0.05 * ((i * 7) % 3) as f32) * (1.0 + age * 0.3), mix(pal.fg, bg, 0.35), 0.22 * (1.0 - k));
-            }
-        }
-        // the trail: smoke that widens and fades behind it
-        for i in 0..22 {
-            let back = i as f32 / 22.0;
-            let ty = ry + back * climb.min(h * 0.5);
-            if ty > oy + hz {
-                break;
-            }
-            disc(win, x + lean * back + (tf * 2.0 + i as f32).sin() * rw * back * 2.0, ty, rw * (0.7 + back * 3.2), mix(pal.fg, mix(a2, pal.warn, 0.5), wt * 0.6), 0.26 * (1.0 - back));
-        }
-        // the flame: a white heart, then warm, flickering
-        let fh = rh * (0.9 + 0.3 * (tf * 40.0).sin());
-        gradient(win, x - rw * 0.45, ry, rw * 0.9, fh, [1.0, 0.98, 0.9], 0.95, pal.warn, 0.0);
-        glow(win, x, ry + rh * 0.1, rh * 1.4, pal.warn, 0.7);
-        let sep = age > 9.5;
-        // the second stage (and the whole rocket before the separation)
-        let hull = if big { [0.78, 0.80, 0.84] } else { [0.95, 0.95, 0.96] };
-        let (body_y, body_h) = if sep { (ry - rh * 0.42, rh * 0.42) } else { (ry - rh, rh) };
-        rect(win, x - rw / 2.0, body_y, rw, body_h, hull, 1.0);
-        rect(win, x, body_y, rw / 2.0, body_h, scale(hull, 0.82), 1.0);
-        disc(win, x, body_y, rw / 2.0, hull, 1.0); // the fairing
-        if !big && !sep {
-            rect(win, x - rw / 2.0, ry - rh * 0.6, rw, rh * 0.07, [0.1, 0.1, 0.12], 1.0); // the black interstage
-            rect(win, x - rw * 0.9, ry - rh * 0.1, rw * 0.4, rh * 0.1, [0.15, 0.15, 0.17], 1.0);
-            rect(win, x + rw * 0.5, ry - rh * 0.1, rw * 0.4, rh * 0.1, [0.15, 0.15, 0.17], 1.0);
-        }
-        if sep {
-            // the booster comes off and falls back
-            let fa = age - 9.5;
-            let by = ry + rh * 0.1 + fa * fa * h * 0.004;
-            if by < oy + hz {
-                rect(win, x + fa * rw * 1.2 - rw / 2.0, by, rw, rh * 0.58, scale(hull, 0.9), 0.95);
-            }
-        }
-        let phase = if age < 5.0 { "liftoff" } else if age < 9.5 { "max Q" } else { "stage separation" };
-        if !privacy {
-            marks.push(PlaneMark { c: pal.warn, x: (x - ox + rh * 0.5).clamp(w * 0.245, w * 0.70), y: (ry - oy - rh * 1.2).max(h * 0.03), title: l.1.to_uppercase(), line: format!("T+00:{:02} · {phase}", age as i32) });
-        }
-    }
+    world.overhead.draw_fireworks(win, pal, ox, oy, w, h, t, world.band, dt * 20.0);
+    // ---- pulse.js drawLiftoffsFine(): a real launch
+    let share_l = get(st, &["privacy"]).as_bool().unwrap_or(false) || get(st, &["screencast"]).as_bool().unwrap_or(false);
+    world.rockets.paint(win, cx, font, pal, ox, oy, w, h, tf, world.band, [wn, wt, wd], still_l, share_l);
 
     // ---- pulse.js drawPlanes(): the planes really over you, gliding where they are going, each with its tag
     if !simple {
         let frames = dt * 20.0;
         world.sky.planes(win, cx, font, st, pal, ox, oy, w, h, tf, frames, ui_boxes, polish);
+        // drawBanners(), drawBalloons()
+        let (primary, desk) = (world.primary, world.desk_empty);
+        world.street.banners(win, cx, font, st, pal, ox, oy, w, h, t, primary, desk);
+        world.street.balloons(win, cx, font, st, pal, ox, oy, w, h, t, primary, desk, vx, still_l);
     }
     if mars || monolith || pond {
         // a scene in code: its own world over Pulse's sky, reading what the hub gives a scene
