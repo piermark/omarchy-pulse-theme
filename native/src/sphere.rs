@@ -271,6 +271,8 @@ impl Tex<'_> {
                     for ch in 0..3 {
                         data[o + ch] = (data[o + ch] as f32 * (1.0 - a) + col[ch] * a) as u8;
                     }
+                    // and its coverage: the words are painted on their own layer (1.0.1), which must know where they are
+                    data[o + 3] = (data[o + 3] as f32 * (1.0 - a) + 255.0 * a) as u8;
                 }
             }
         };
@@ -768,8 +770,8 @@ impl Sphere {
                 let b = (a + w - 1) % w;
                 let (pa, pb) = ((row + a) * 4, (row + b) * 4);
                 let ca = (src[pa + 3] as u32 * k0 + src[pb + 3] as u32 * k1) >> 8;
-                if ca == 0 {
-                    continue;
+                if ca == 0 && src[pa] | src[pa + 1] | src[pa + 2] | src[pb] | src[pb + 1] | src[pb + 2] == 0 {
+                    continue; // (a picture is added light: colour without coverage, so only an empty pixel is skipped)
                 }
                 let o = (row + x) * 4;
                 let keep = 255 - ca.min(255);

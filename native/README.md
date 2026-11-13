@@ -4,7 +4,7 @@ A parallel renderer for Omarchy Pulse. The web page stays the default (and is wh
 paints the same wallpaper natively on the GPU, with no browser underneath. It reads the same hub: the same
 `omarchy-pulse` service, the same token and the same `pulse.toml`.
 
-**Version 1.0.1.** A complete renderer of Pulse 1.8 beside the web page, which stays (and is what runs on
+**Version 1.0.2.** A complete renderer of Pulse 1.8 beside the web page, which stays (and is what runs on
 OmarchyTV): you choose which one draws your wallpaper, and go back with one command. It is a line-by-line
 translation of the published Pulse 1.8 (`pulse.js` and `pulse.css`), so that it looks and moves the same, and a
 little more like a game where the web page cannot: lights that burn white at their core (the canvas's "lighter"
@@ -157,6 +157,8 @@ From the same state the web page reads:
 
 ## Changes
 
+- **1.0.2**: the words on the sphere are back (1.0.1 showed only its drawings, as the weather's icon: the letters
+  and the pictures did not mark where they were on the sphere's new content layer).
 - **1.0.1**: the pictures and words on the sphere glide as smoothly as it turns (they stepped a texel at a time);
   no more flashes of old shapes for a frame beside the panels or a plane's tag (a group of shapes GPUI lays as one
   picture is now fresh all over); a plane's contrail starts again after a jump instead of drawing stripes.
