@@ -154,6 +154,11 @@ From the same state the web page reads:
   `--calm 30` for a smoother calm scene. `PULSE_PERF=1` prints what each part of a frame costs.
 - **Night in the middle of the day**: the hub has no location for the real Sun; set it in `pulse.toml` (the
   weather's city): pulse-native then follows the weather's sunrise and sunset.
+- **A still image instead of Pulse after a reboot**: newer Omarchy releases draw the theme background from the
+  shell (`omarchy.background`, with `owe`), and at login it can land on top of Pulse, which keeps running underneath
+  (`hyprctl layers` shows `omarchy-background` above `omarchy-pulse`). `systemctl --user restart omarchy-pulse`
+  brings it back for this session; `omarchy-plugin-disable omarchy.background` fixes it for good
+  (`omarchy-plugin-enable omarchy.background` to undo, for example before switching to another theme).
 
 ## Changes
 
