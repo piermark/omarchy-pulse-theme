@@ -4,7 +4,7 @@ A parallel renderer for Omarchy Pulse. The web page stays the default (and is wh
 paints the same wallpaper natively on the GPU, with no browser underneath. It reads the same hub: the same
 `omarchy-pulse` service, the same token and the same `pulse.toml`.
 
-**Version 1.0.2.** A complete renderer of Pulse 1.8 beside the web page, which stays (and is what runs on
+**Version 1.0.3.** A complete renderer of Pulse 1.8 beside the web page, which stays (and is what runs on
 OmarchyTV): you choose which one draws your wallpaper, and go back with one command. It is a line-by-line
 translation of the published Pulse 1.8 (`pulse.js` and `pulse.css`), so that it looks and moves the same, and a
 little more like a game where the web page cannot: lights that burn white at their core (the canvas's "lighter"
@@ -63,6 +63,7 @@ cd ~/pulse-native && git pull && cd native && cargo build --release && ./install
 | `--fps N` | the most frames a second, 5 to 60 (default: the hub's `[pulse] fps`, else 20) |
 | `--cpu N` | the most of one core it may use, in percent (also `PULSE_CPU`); by default 15 on a laptop, 25 on a desktop, up to twice that on a big screen (the square root of its pixels over 1080p's) |
 | `--calm N` | frames a second when nothing fast moves (also `PULSE_CALM_FPS`); by default 10 on a laptop, 20 on a desktop |
+| `--layer L` | `bottom` (default) or `background` (also `PULSE_LAYER`): the layer-shell layer; `bottom` is above the still background newer Omarchy draws from its shell, and under every window |
 | `--gpu G` | `auto` (default), `gl` or `vulkan` (also `PULSE_GPU`): `auto` draws with OpenGL on Intel Ivy Bridge and Haswell |
 | `--url URL` | the hub (default `http://127.0.0.1:` + `PULSE_PORT` or `[pulse] port`) |
 | `--font NAME` | the font (default: `[pulse] font`, else CaskaydiaMono Nerd Font) |
@@ -159,9 +160,14 @@ From the same state the web page reads:
   (`hyprctl layers` shows `omarchy-background` above `omarchy-pulse`). `systemctl --user restart omarchy-pulse`
   brings it back for this session; `omarchy-plugin-disable omarchy.background` fixes it for good
   (`omarchy-plugin-enable omarchy.background` to undo, for example before switching to another theme).
+  Since 1.0.3 pulse-native sits on the `bottom` layer, above that background, so this should no longer happen;
+  `--layer background` goes back to the old layer.
 
 ## Changes
 
+- **1.0.3**: the wallpaper sits on the layer-shell `bottom` layer, above the still background that newer Omarchy
+  draws from its shell (at login it could cover Pulse) and still under every window; `--layer background` or
+  `PULSE_LAYER=background` go back to the old layer.
 - **1.0.2**: the words on the sphere are back (1.0.1 showed only its drawings, as the weather's icon: the letters
   and the pictures did not mark where they were on the sphere's new content layer).
 - **1.0.1**: the pictures and words on the sphere glide as smoothly as it turns (they stepped a texel at a time);

@@ -290,6 +290,12 @@ fn on_battery_machine() -> bool {
     })
 }
 
+/// The layer the wallpaper lives on: --layer or PULSE_LAYER, "bottom" by default (see where the window is made).
+fn layer_name() -> String {
+    let arg = std::env::args().skip_while(|a| a != "--layer").nth(1);
+    arg.or_else(|| std::env::var("PULSE_LAYER").ok()).map(|v| v.to_lowercase()).filter(|v| v == "background" || v == "bottom").unwrap_or_else(|| "bottom".into())
+}
+
 /// How many frames a second a calm scene gets: --calm or PULSE_CALM_FPS when given (issue #42); else 10 on a laptop,
 /// 20 on a desktop.
 fn calm_fps() -> u64 {
@@ -1075,6 +1081,9 @@ fn args() -> Args {
                 }
             }
             "--gpu" => a.gpu = it.next(),
+            "--layer" => {
+                it.next(); // read by layer_name()
+            }
             "--calm" => {
                 it.next(); // read by calm_fps()
             }
@@ -1085,7 +1094,7 @@ fn args() -> Args {
                 std::process::exit(0);
             }
             _ => {
-                println!("pulse-native {}: Omarchy Pulse, drawn natively (Rust + GPUI)\n\n  pulse-native            the wallpaper (a Wayland layer-shell surface behind your windows)\n  pulse-native --window   an ordinary window\n  --url URL   the hub (default: http://127.0.0.1:PORT from PULSE_PORT or pulse.toml)\n  --fps N     frames a second, 5 to 60 (default: the hub's [pulse] fps)\n  --cpu N     at most N% of one core (default 15 on a laptop, 25 on a desktop, up to twice that on a big screen; PULSE_CPU too): fewer frames a second when they cost more\n  --calm N    frames a second for a calm scene (default 10 on a laptop, 20 on a desktop; PULSE_CALM_FPS)\n  --gpu G     vulkan, gl or auto (default; PULSE_GPU too): auto takes OpenGL on Ivy Bridge and Haswell\n  --font NAME the font (default: {FONT})\n  --scene S   the scene: by default the hub's own ([pulse] scene); skyline, sphere, or city (pulse-native's first world)", env!("CARGO_PKG_VERSION"));
+                println!("pulse-native {}: Omarchy Pulse, drawn natively (Rust + GPUI)\n\n  pulse-native            the wallpaper (a Wayland layer-shell surface behind your windows)\n  pulse-native --window   an ordinary window\n  --url URL   the hub (default: http://127.0.0.1:PORT from PULSE_PORT or pulse.toml)\n  --fps N     frames a second, 5 to 60 (default: the hub's [pulse] fps)\n  --cpu N     at most N% of one core (default 15 on a laptop, 25 on a desktop, up to twice that on a big screen; PULSE_CPU too): fewer frames a second when they cost more\n  --calm N    frames a second for a calm scene (default 10 on a laptop, 20 on a desktop; PULSE_CALM_FPS)\n  --layer L   bottom (default: over Omarchy's own still background) or background (PULSE_LAYER)\n  --gpu G     vulkan, gl or auto (default; PULSE_GPU too): auto takes OpenGL on Ivy Bridge and Haswell\n  --font NAME the font (default: {FONT})\n  --scene S   the scene: by default the hub's own ([pulse] scene); skyline, sphere, or city (pulse-native's first world)", env!("CARGO_PKG_VERSION"));
                 std::process::exit(if x == "--help" || x == "-h" { 0 } else { 2 });
             }
         }
@@ -1116,13 +1125,16 @@ fn main() {
             options = if a.window {
                 options.window_bounds(Some(WindowBounds::Windowed(Bounds { origin: point(px(0.), px(0.)), size: Size::new(px(1280.), px(720.)) })))
             } else {
-                // the wallpaper: the background layer, stretched to every edge, under the bar too, and never taking the keyboard
+                // the wallpaper: stretched to every edge, under the bar too, and never taking the keyboard. On the
+                // "bottom" layer (above the background layer, under every window): newer Omarchy draws the theme's
+                // still background from the shell on the background layer, and at login it could land over Pulse.
+                // --layer background (PULSE_LAYER) goes back to the layer the web wallpaper uses
                 options
                     // the monitor's own size (0 × 0, stretched by the anchors, when it is not known)
                     .window_bounds(Some(WindowBounds::Windowed(Bounds { origin: point(px(0.), px(0.)), size: screen_size })))
                     .kind(WindowKind::LayerShell(LayerShellOptions {
                         namespace: "omarchy-pulse".to_string(),
-                        layer: Layer::Background,
+                        layer: if layer_name() == "background" { Layer::Background } else { Layer::Bottom },
                         anchor: Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT,
                         exclusive_zone: Some(px(-1.)),
                         keyboard_interactivity: KeyboardInteractivity::None,
