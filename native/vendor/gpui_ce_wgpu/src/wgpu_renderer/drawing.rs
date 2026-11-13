@@ -268,6 +268,7 @@ impl WgpuRenderer {
         let area = |r: &[u32; 4]| (r[2] - r[0]) as u64 * (r[3] - r[1]) as u64;
         let union = |a: &[u32; 4], b: &[u32; 4]| [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])];
         let touch = |a: &[u32; 4], b: &[u32; 4]| a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3];
+        let combined = paths.first().zip(paths.last()).is_some_and(|(a, b)| a.order != b.order);
         let mut pieces: Vec<[u32; 4]> = Vec::new();
         let mut of_path: Vec<usize> = Vec::with_capacity(paths.len());
         for path in paths {
@@ -275,7 +276,10 @@ impl WgpuRenderer {
                 of_path.push(usize::MAX);
                 continue;
             };
-            let near = pieces.iter().position(|p| touch(p, &r) || area(&union(p, &r)) <= (area(p) + area(&r)) * 3 / 2 + 4096);
+            // when the batch's paths are not all of one order, GPUI composites them as one sprite over the union of
+            // their bounds (path_types::sprites): then the whole union must be fresh, so it is one piece (packing
+            // pieces apart left the space between them stale, and old paths flashed there for a frame)
+            let near = if combined { (!pieces.is_empty()).then_some(0) } else { pieces.iter().position(|p| touch(p, &r) || area(&union(p, &r)) <= (area(p) + area(&r)) * 3 / 2 + 4096) };
             match near {
                 Some(i) => {
                     pieces[i] = union(&pieces[i], &r);

@@ -263,6 +263,11 @@ impl Sky {
             let track = num(p, &["track"]).unwrap_or(0.0) as f32;
             let mut dir: f32 = if track.to_radians().sin() > 0.0 { -1.0 } else { 1.0 }; // heading east flies to the left
             // where it came from: a contrail that fades behind it
+            // a jump (a new fix far from where it was going, a panel it is moved beside): its contrail starts again
+            // instead of a line across the sky
+            if q.2.last().map(|l| (l.0 - q.0).abs() + (l.1 - q.1).abs() > s2 * 6.0).unwrap_or(false) {
+                q.2.clear();
+            }
             if q.2.last().map(|l| (l.0 - q.0).abs() + (l.1 - q.1).abs() > 2.0).unwrap_or(true) {
                 q.2.push((q.0, q.1));
                 if q.2.len() > 70 {
@@ -284,7 +289,10 @@ impl Sky {
                     continue;
                 }
                 let kf = (k0 + k1) as f32 / 2.0 / n as f32;
-                let segs: Vec<_> = (k0..k1).map(|k| ((ox + q.2[k - 1].0, oy + q.2[k - 1].1), (ox + q.2[k].0, oy + q.2[k].1))).collect();
+                let segs: Vec<_> = (k0..k1)
+                    .filter(|&k| (q.2[k].0 - q.2[k - 1].0).abs() + (q.2[k].1 - q.2[k - 1].1).abs() <= s2 * 6.0)
+                    .map(|k| ((ox + q.2[k - 1].0, oy + q.2[k - 1].1), (ox + q.2[k].0, oy + q.2[k].1)))
+                    .collect();
                 draw::lines(win, &segs, (s2 * 0.35 * kf).max(1.0), pal.fg, 0.28 * kf);
             }
             // where it really moves on the screen wins over its heading (a turn, a plane almost overhead)

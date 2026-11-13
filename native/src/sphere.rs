@@ -85,6 +85,8 @@ pub struct Sphere {
     /// the screen under the content (its gradient, its stripes, its two lines) as it was last painted, and what it
     /// was painted for: it changes only with the colours and the programme, so it is copied, not painted again
     base: (String, Vec<u8>),
+    /// the content's own layer (or, while it is painted, the base under it)
+    content: Pixmap,
 }
 
 fn font_file() -> Option<Vec<u8>> {
@@ -399,7 +401,7 @@ impl Sphere {
                 led.push((phi, j as f32 / n as f32 * TAU));
             }
         }
-        Sphere { tex: Pixmap::new((TW * TX) as u32, (TH * TX) as u32).expect("the sphere's texture"), font, glyphs: Default::default(), map: None, out: Vec::new(), refl: Vec::new(), d: 0, avg: [0.0; 3], prog_i: 0, prog_at: 0.0, prog: "face", led, pics: Default::default(), base: Default::default() }
+        Sphere { tex: Pixmap::new((TW * TX) as u32, (TH * TX) as u32).expect("the sphere's texture"), font, glyphs: Default::default(), map: None, out: Vec::new(), refl: Vec::new(), d: 0, avg: [0.0; 3], prog_i: 0, prog_at: 0.0, prog: "face", led, pics: Default::default(), base: Default::default(), content: Pixmap::new((TW * TX) as u32, (TH * TX) as u32).expect("the sphere's content") }
     }
 
     /// pulse.js sphereProgram(): what is urgent first, then the face, the music, and the programmes in turn.
@@ -552,7 +554,15 @@ impl Sphere {
             }
             self.base = (base_key, c.pm.data().to_vec());
         }
-        let fx = front + (t * 0.25).sin() * TW * 0.04; // content gently sways around the front
+        // the content is painted still, in the middle of its own layer, and laid on the base shifted to the front
+        // with sub-texel precision (the glyphs and pictures land on whole pixels: painted where the front is, they
+        // stepped a texel at a time while the sphere turned smoothly under them)
+        let _ = c;
+        std::mem::swap(&mut self.tex, &mut self.content); // the base waits in `content`
+        self.tex.fill(tiny_skia::Color::TRANSPARENT);
+        let mut c = Tex { pm: &mut self.tex, font: font.as_deref(), glyphs: &mut self.glyphs, ts: Transform::from_scale(TX, TX), alpha: 1.0 };
+        let shift = front + (t * 0.25).sin() * TW * 0.04 - TW / 2.0; // content gently sways around the front
+        let fx = TW / 2.0;
         let at = [fx, fx - TW, fx + TW];
         match prog {
             "clock" => {
@@ -738,6 +748,39 @@ impl Sphere {
             // night cameras are dark: twice as bright on the sphere
             for x in at { self.add_picture("cam", x - TH * 0.9, TH * 0.12, 2.0) }
         }
+        self.lay_content(shift);
+    }
+
+    /// The content layer (in `tex`) over the base (in `content`), moved `shift` texels to the right, between two
+    /// pixels where it falls between them; the result ends in `tex`.
+    fn lay_content(&mut self, shift: f32) {
+        let (w, h) = (self.tex.width() as usize, self.tex.height() as usize);
+        let s = (shift * TX).rem_euclid(w as f32);
+        let (i, fr) = (s.floor() as usize, s - s.floor());
+        let (k1, k0) = ((fr * 256.0) as u32, 256 - (fr * 256.0) as u32);
+        let src = self.tex.data();
+        let dst = self.content.data_mut();
+        for y in 0..h {
+            let row = y * w;
+            for x in 0..w {
+                // content at x - s: between x - i (weight 1 - fr) and x - i - 1 (weight fr)
+                let a = (x + w - i) % w;
+                let b = (a + w - 1) % w;
+                let (pa, pb) = ((row + a) * 4, (row + b) * 4);
+                let ca = (src[pa + 3] as u32 * k0 + src[pb + 3] as u32 * k1) >> 8;
+                if ca == 0 {
+                    continue;
+                }
+                let o = (row + x) * 4;
+                let keep = 255 - ca.min(255);
+                for ch in 0..3 {
+                    let cv = (src[pa + ch] as u32 * k0 + src[pb + ch] as u32 * k1) >> 8;
+                    dst[o + ch] = (cv + dst[o + ch] as u32 * keep / 255).min(255) as u8;
+                }
+                dst[o + 3] = (ca + dst[o + 3] as u32 * keep / 255).min(255) as u8;
+            }
+        }
+        std::mem::swap(&mut self.tex, &mut self.content);
     }
 
     /// pulse.js sphereMap(): for every pixel of a D×D sphere, its row on the texture, its longitude, how lit it is.
