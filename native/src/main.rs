@@ -10,6 +10,7 @@
 //!     pulse-native --url http://127.0.0.1:47800 --fps 30
 
 mod backdrop;
+mod cities;
 mod cities_data;
 mod city;
 mod gpu;
@@ -166,8 +167,9 @@ impl Pulse {
                         }
                     }
                     this.cap.set((cap, slow, at));
-                    // a calm scene (nothing falling, no music, no fireworks...) moves slowly: 10 frames a second
-                    let calm_cap = if this.world.borrow().lively { 60 } else { 10 };
+                    // a calm scene (nothing falling, no music, no fireworks...) moves slowly: 10 frames a second on a
+                    // laptop, 20 on a desktop (--calm)
+                    let calm_cap = if this.world.borrow().lively { 60 } else { calm_fps() };
                     match this.budget_fps.get() { 0 => cap.min(calm_cap), b => cap.min(b).min(calm_cap) }
                 }) {
                     Ok(cap) => want = want.min(cap),
@@ -255,11 +257,47 @@ fn urlenc(s: &str) -> String {
 }
 
 /// Is this monitor covered (nothing to draw), and how many frames a second otherwise: pulse.js's Scene.mode.
-/// How much of one core the wallpaper may use (percent): `--cpu N` or PULSE_CPU, 15 by default. The frames a second
-/// come down until a second of frames costs no more than that (never under 8); a fast PC keeps all of them.
+/// How much of one core the wallpaper may use (percent): `--cpu N` or PULSE_CPU (else see cpu_budget()). The frames a second
+/// come down until a second of frames costs no more than that (never under 6); a fast PC keeps all of them.
 static CPU_BUDGET: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+/// The CPU budget in percent of one core: --cpu or PULSE_CPU when given. Else 15 on a computer with a battery (a
+/// laptop: its battery and its fan come first) and 25 on one without; more on a big screen, which has more to draw
+/// in every frame: as much more as the square root of its pixels over a 1080p screen's, up to twice (issue #42: a
+/// 3440×1440 desktop was held at 6 frames a second by 15).
 fn cpu_budget() -> f64 {
-    *CPU_BUDGET.get_or_init(|| std::env::var("PULSE_CPU").ok().and_then(|v| v.parse::<f64>().ok()).map(|v| v.clamp(3.0, 100.0)).unwrap_or(15.0))
+    if let Some(b) = CPU_BUDGET.get() {
+        return *b;
+    }
+    if let Some(v) = std::env::var("PULSE_CPU").ok().and_then(|v| v.parse::<f64>().ok()) {
+        return *CPU_BUDGET.get_or_init(|| v.clamp(3.0, 100.0));
+    }
+    let base = if on_battery_machine() { 15.0 } else { 25.0 };
+    let px = VIEW_PX.load(std::sync::atomic::Ordering::Relaxed) as f64;
+    base * (px / (1920.0 * 1080.0)).sqrt().clamp(1.0, 2.0)
+}
+
+/// The biggest view's pixels (physical): the budget grows with it.
+static VIEW_PX: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Does this computer have a battery of its own (a laptop)? Read once.
+fn on_battery_machine() -> bool {
+    static B: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *B.get_or_init(|| {
+        std::fs::read_dir("/sys/class/power_supply").map(|d| d.flatten().any(|e| {
+            let r = |f: &str| std::fs::read_to_string(e.path().join(f)).unwrap_or_default();
+            r("type").trim() == "Battery" && r("scope").trim() != "Device"
+        })).unwrap_or(false)
+    })
+}
+
+/// How many frames a second a calm scene gets: --calm or PULSE_CALM_FPS when given (issue #42); else 10 on a laptop,
+/// 20 on a desktop.
+fn calm_fps() -> u64 {
+    static C: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *C.get_or_init(|| {
+        let arg = std::env::args().skip_while(|a| a != "--calm").nth(1);
+        arg.or_else(|| std::env::var("PULSE_CALM_FPS").ok()).and_then(|v| v.parse::<u64>().ok()).map(|v| v.clamp(4, 60)).unwrap_or(if on_battery_machine() { 10 } else { 20 })
+    })
 }
 
 /// How much of one core this process used over the last two seconds (percent), and which sample that is. Read
@@ -466,6 +504,8 @@ impl Pulse {
         }
         let vp = window.viewport_size();
         let (w, h) = (f32::from(vp.width), f32::from(vp.height));
+        let phys = (w * window.scale_factor()) as u64 * (h * window.scale_factor()) as u64;
+        VIEW_PX.fetch_max(phys, std::sync::atomic::Ordering::Relaxed);
         let u = (h / 1080.0).max(0.5);
         let t = self.started.elapsed().as_secs_f64();
         let (hm, sec, date) = clock(&st);
@@ -600,7 +640,7 @@ impl Pulse {
         let scene_pal = if scene_name == "hacker" { modes::green(&pal) } else { pal };
         let (design2, scene_st2, mem2, drawn_out) = (design.clone(), scene_st.clone(), self.mem.clone(), self.drawn.clone());
         let scene_font: SharedString = { let f = text(&st, &["ui", "font"]); if f.is_empty() { self.font.clone() } else { f.into() } };
-        let boxes_in = self.hud_data.borrow().ui_boxes.clone();
+        let (boxes_in, boxes_prev) = { let d = self.hud_data.borrow(); (d.ui_boxes.clone(), d.ui_boxes_prev.clone()) };
         let cost_out = self.cost.clone();
         let sky = canvas(
             |_, _, _| {},
@@ -610,7 +650,13 @@ impl Pulse {
                     return;
                 }
                 let began = Instant::now();
-                let marks = if is_city { city::paint(bounds, &mut old.borrow_mut(), &st2, &pal2, t, window) } else { crate::perf::time("scene", || scene::paint(bounds, &mut world.borrow_mut(), &st2, &scene_pal, t, &kind2, bare, window, cx, &scene_font, &boxes_in.borrow())) };
+                let marks = if is_city { city::paint(bounds, &mut old.borrow_mut(), &st2, &pal2, t, window) } else { crate::perf::time("scene", || scene::paint(bounds, &mut world.borrow_mut(), &st2, &scene_pal, t, &kind2, bare, window, cx, &scene_font, &{
+                    // the panels' places: on the frame the panels are laid out again they are not measured yet
+                    // (they are after the scene), so the last ones stand in (else a plane beside a panel jumped back
+                    // under it for one frame every second, and its contrail zigzagged)
+                    let b = boxes_in.borrow();
+                    if b.is_empty() { boxes_prev.borrow().clone() } else { b.clone() }
+                })) };
                 if let Some((_, d)) = &design2 {
                     let (ox, oy, w2, h2) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y), f32::from(bounds.size.width), f32::from(bounds.size.height));
                     *drawn_out.borrow_mut() = design::paint(window, d, &scene_st2, &pal2, &mut mem2.borrow_mut(), t, ox, oy, w2, h2);
@@ -650,9 +696,22 @@ impl Pulse {
             let boxes0 = self.boxes.clone();
             let mut wrap = |id: String, sl: String, hidden: bool, p: ui::Panel| -> ui::Panel {
                 let (boxes, id_box, slot_box) = (boxes0.clone(), id.clone(), sl.clone());
-                let (id_down, id_hide) = (id.clone(), id.clone());
+                let (id_down, id_hide, id_x) = (id.clone(), id.clone(), id.clone());
+                let rr_x = ui::rem(w, h);
+                // pulse.js: a × in the corner hides the panel and shows it again (the right button does the same)
+                let close = div().absolute().top(px(0.3 * rr_x)).right(px(0.4 * rr_x)).size(px(1.6 * rr_x)).rounded_full().border_1().border_color(col(pal.accent, 0.7)).bg(col(pal.bg, 1.0))
+                    .text_color(col(pal.fg, 1.0)).flex().items_center().justify_center().cursor_pointer().child("×")
+                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                        if let Some(d) = this.draft.as_mut() {
+                            let e = d.entry(id_x.clone()).or_insert_with(|| serde_json::json!({}));
+                            let was = e.get("hidden").and_then(Value::as_bool).unwrap_or(false);
+                            e["hidden"] = serde_json::json!(!was);
+                        }
+                        cx.stop_propagation();
+                    }));
                 let el = div().relative().border_1().border_dashed().border_color(col(if dragging.as_deref() == Some(id.as_str()) { pal.warn } else { pal.accent }, 0.7)).cursor_pointer().opacity(if hidden { 0.3 } else { 1.0 }).child(p.el)
                     .child(canvas(move |b, _, _| { boxes.borrow_mut().insert(id_box, (slot_box, f32::from(b.origin.y), f32::from(b.size.height))); }, |_, _, _, _| ()).absolute().top_0().left_0().size_full())
+                    .child(close)
                     .on_mouse_down(MouseButton::Left, cx.listener(move |this, _: &MouseDownEvent, _, cx| { this.drag = Some(id_down.clone()); cx.stop_propagation(); }))
                     .on_mouse_down(MouseButton::Right, cx.listener(move |this, _: &MouseDownEvent, _, cx| {
                         if let Some(d) = this.draft.as_mut() {
@@ -876,7 +935,7 @@ impl Pulse {
                 }))
             };
             let mut bar = div().px(px(22.0 * u)).py(px(10.0 * u)).flex().items_center().gap(px(16.0 * u)).bg(col(pal.bg, 0.92)).border_1().border_color(col(pal.accent2, 0.9)).text_size(px(15.0 * u))
-                .child(div().text_color(col(pal.fg, 0.9)).child("Drag the panels where you want them · right click hides one"))
+                .child(div().text_color(col(pal.fg, 0.9)).child("Drag the panels where you want them · × hides one"))
                 .child(button("Save", "save", self.base.clone(), pal.ok))
                 .child(button("Cancel", "cancel", self.base.clone(), pal.fg))
                 .child(button("Reset", "reset", self.base.clone(), pal.warn));
@@ -1016,6 +1075,9 @@ fn args() -> Args {
                 }
             }
             "--gpu" => a.gpu = it.next(),
+            "--calm" => {
+                it.next(); // read by calm_fps()
+            }
             "--font" => a.font = it.next().unwrap_or(a.font),
             "--scene" => a.scene = it.next().unwrap_or(a.scene),
             "--version" | "-V" => {
@@ -1023,7 +1085,7 @@ fn args() -> Args {
                 std::process::exit(0);
             }
             _ => {
-                println!("pulse-native {}: Omarchy Pulse, drawn natively (Rust + GPUI)\n\n  pulse-native            the wallpaper (a Wayland layer-shell surface behind your windows)\n  pulse-native --window   an ordinary window\n  --url URL   the hub (default: http://127.0.0.1:PORT from PULSE_PORT or pulse.toml)\n  --fps N     frames a second, 5 to 60 (default: the hub's [pulse] fps)\n  --cpu N     at most N% of one core (default 15; PULSE_CPU too): fewer frames a second when they cost more\n  --gpu G     vulkan, gl or auto (default; PULSE_GPU too): auto takes OpenGL on Ivy Bridge and Haswell\n  --font NAME the font (default: {FONT})\n  --scene S   the scene: by default the hub's own ([pulse] scene); skyline, sphere, or city (pulse-native's first world)", env!("CARGO_PKG_VERSION"));
+                println!("pulse-native {}: Omarchy Pulse, drawn natively (Rust + GPUI)\n\n  pulse-native            the wallpaper (a Wayland layer-shell surface behind your windows)\n  pulse-native --window   an ordinary window\n  --url URL   the hub (default: http://127.0.0.1:PORT from PULSE_PORT or pulse.toml)\n  --fps N     frames a second, 5 to 60 (default: the hub's [pulse] fps)\n  --cpu N     at most N% of one core (default 15 on a laptop, 25 on a desktop, up to twice that on a big screen; PULSE_CPU too): fewer frames a second when they cost more\n  --calm N    frames a second for a calm scene (default 10 on a laptop, 20 on a desktop; PULSE_CALM_FPS)\n  --gpu G     vulkan, gl or auto (default; PULSE_GPU too): auto takes OpenGL on Ivy Bridge and Haswell\n  --font NAME the font (default: {FONT})\n  --scene S   the scene: by default the hub's own ([pulse] scene); skyline, sphere, or city (pulse-native's first world)", env!("CARGO_PKG_VERSION"));
                 std::process::exit(if x == "--help" || x == "-h" { 0 } else { 2 });
             }
         }
@@ -1111,6 +1173,8 @@ pub struct HudData {
     typed: std::collections::HashMap<String, (String, f64)>,
     cams: std::collections::HashMap<String, (String, Arc<gpui::Image>)>,
     ui_boxes: Rc<RefCell<Vec<[f32; 4]>>>,
+    /// the last complete set of them
+    ui_boxes_prev: Rc<RefCell<Vec<[f32; 4]>>>,
     /// panels clicked a moment ago that clear themselves (the notifications): gone at once, before the hub says so
     cleared: Rc<RefCell<std::collections::HashMap<String, Instant>>>,
 }
@@ -1190,7 +1254,12 @@ fn panels_el(d: &mut HudData, layout: &Value, editing: bool, wrap: &mut dyn FnMu
     {
         // the saved layout (~/.config/omarchy-pulse/layout.json, through the hub): a column, a place, or hidden;
         // in NOC mode the personal panels go away
-        d.ui_boxes.borrow_mut().clear();
+        {
+            let mut cur = d.ui_boxes.borrow_mut();
+            if !cur.is_empty() {
+                *d.ui_boxes_prev.borrow_mut() = std::mem::take(&mut *cur);
+            }
+        }
         let noc_on = get(&st, &["noc", "on"]).as_bool().unwrap_or(false);
         let noc_hide: Vec<String> = get(&st, &["ui", "nocHide"]).as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_else(|| vec!["media".into(), "notifications".into()]);
         let mut placed: Vec<(String, f64, ui::Panel)> = Vec::new();

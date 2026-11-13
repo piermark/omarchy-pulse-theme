@@ -2,12 +2,11 @@
 //! radar sweeping your network, in phosphor green) and `noir` (a megacity at night: towers in layers with thousands
 //! of windows, searchlights in the clouds, a hologram board, cars in the air, rain that never stops, a wet street).
 
-use crate::hub::{list, num, text};
 use crate::life::Frame;
-use crate::palette::{col, mix, scale, Pal, C};
-use crate::scene::{glow, gradient, rect, PlaneMark, Rand};
-use gpui::{point, px, PathBuilder, Window};
-use serde_json::Value;
+use crate::palette::{Pal, C};
+use crate::scene::{gradient, rect};
+use gpui::{size, Bounds};
+use gpui::{point, px, Window};
 
 /// `scene = "hacker"`: everything in phosphor green, as an old terminal.
 pub fn green(pal: &Pal) -> Pal {
@@ -17,108 +16,142 @@ pub fn green(pal: &Pal) -> Pal {
 
 
 
-/// `scene = "noir"`: the megacity's own sky and street (its colours are its own, as on the web page).
-pub fn noir_sky(win: &mut Window, f: &Frame) {
-    let c = |r: u8, g: u8, b: u8| -> C { [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0] };
-    gradient(win, f.ox, f.oy, f.w, f.hz * 0.55 + 1.0, c(6, 9, 18), 1.0, c(22, 30, 48), 1.0);
-    gradient(win, f.ox, f.oy + f.hz * 0.55, f.w, f.hz * 0.45 + 1.0, c(22, 30, 48), 1.0, c(92, 64, 48), 1.0);
-    gradient(win, f.ox, f.oy + f.hz, f.w, f.h - f.hz, c(24, 22, 30), 1.0, c(6, 6, 10), 1.0);
+/// What the noir scene keeps between frames: the cars in the air (pulse.js flyers), the big screen's picture and
+/// the Omarchy icon in pink.
+#[derive(Default)]
+pub struct Noir {
+    flyers: Vec<[f32; 3]>,
+    pub board: Option<std::sync::Arc<gpui::RenderImage>>,
+    logo: Option<std::sync::Arc<gpui::RenderImage>>,
+    seed: u64,
 }
 
-/// The megacity itself, over its sky: layers of towers, searchlights, the board, the cars in the air, the rain.
-pub fn noir_city(win: &mut Window, st: &Value, pal: &Pal, f: &Frame, marks: &mut Vec<PlaneMark>) {
+impl Noir {
+    fn rand(&mut self) -> f32 {
+        self.seed = self.seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        ((self.seed >> 33) as f32) / (1u64 << 31) as f32
+    }
+}
+
+/// pulse.js drawNoirCity() and drawNoir(t, hz, true): searchlights in the clouds, the antennas' red lights, the big
+/// screen on the central tower (what the sphere shows in the other scenes), the neon signs, the cars in the air, the
+/// rain that never stops, the city's lights on the wet street. `back` is the backdrop (in its pixels: `sf` per
+/// screen pixel), `board_px` the sphere's texture seen from the front (BGRA, its size) when it is new.
+#[allow(clippy::too_many_arguments)]
+pub fn noir_city(win: &mut Window, cx: &mut gpui::App, font: &gpui::SharedString, pal: &Pal, f: &Frame, back: &crate::backdrop::Backdrop, sf: f32, board_px: Option<(Vec<u8>, u32, u32)>, mem: &mut Noir, still: bool, frames: f32) {
     let c = |r: u8, g: u8, b: u8| -> C { [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0] };
-    let mut rnd = Rand::new(4242);
-    // searchlights in the clouds
-    for i in 0..4 {
-        let bx = f.ox + f.w * (0.18 + 0.21 * i as f32);
-        let a = -1.57 + (f.t * (0.12 + 0.03 * i as f32) + i as f32 * 1.3).sin() * 0.5;
-        let len = f.hz * 0.9;
-        let (ex, ey) = (bx + a.cos() * len, f.oy + f.hz + a.sin() * len);
-        let mut beam = PathBuilder::fill();
-        beam.move_to(point(px(bx - f.u * 2.0), px(f.oy + f.hz)));
-        beam.line_to(point(px(ex - f.w * 0.018), px(ey)));
-        beam.line_to(point(px(ex + f.w * 0.018), px(ey)));
-        beam.line_to(point(px(bx + f.u * 2.0), px(f.oy + f.hz)));
-        beam.close();
-        if let Ok(p) = beam.build() {
-            win.paint_path(p, col(c(170, 200, 255), 0.05));
+    let (w, h, ox, oy, t) = (f.w, f.h, f.ox, f.oy, f.t);
+    let hz = f.oy + f.hz;
+    // searchlights sweeping the clouds ("lighter": added light)
+    for (i, u) in [0.3f32, 0.55, 0.78].iter().enumerate() {
+        let a = -std::f32::consts::FRAC_PI_2 + if still { (i as f32 - 1.0) * 0.3 } else { (t * (0.13 + i as f32 * 0.05) + i as f32 * 2.0).sin() * 0.55 };
+        let (x, len) = (ox + w * u, h * 0.9);
+        let pts = [(x, hz), (x + (a - 0.04).cos() * len, hz + (a - 0.04).sin() * len), (x + (a + 0.04).cos() * len, hz + (a + 0.04).sin() * len)];
+        let ang = a.cos().atan2(-a.sin()).to_degrees();
+        crate::draw::poly_grad(win, &pts, ang, c(200, 220, 255), 0.10, c(200, 220, 255), 0.0);
+    }
+    for (i, p) in back.noir_tops.iter().enumerate() {
+        if still || (t + i as f32 * 0.37).rem_euclid(2.0) < 0.25 {
+            rect(win, ox + p.0 / sf - 1.5, oy + p.1 / sf - 1.5, 3.0, 3.0, c(255, 40, 40), 0.95);
         }
     }
-    // three layers of towers, the far ones paler in the haze
-    for layer in 0..3 {
-        let depth = layer as f32 / 2.0;
-        let body = mix(c(40, 44, 62), c(10, 11, 18), depth);
-        let mut x = -0.02f32;
-        while x < 1.02 {
-            let bw = (0.014 + rnd.next() * 0.03) * (0.8 + depth * 0.7);
-            let bh = (0.10 + rnd.next() * 0.30) * (0.55 + depth * 0.55) * if rnd.next() > 0.85 { 1.35 } else { 1.0 };
-            let (px0, pw, ph) = (f.ox + x * f.w, bw * f.w, bh * f.h);
-            let py = f.oy + f.hz - ph;
-            rect(win, px0, py, pw, ph + 1.0, body, 1.0);
-            rect(win, px0 + pw * 0.7, py, pw * 0.3, ph, scale(body, 0.7), 1.0);
-            let (cw, ch) = ((f.u * (1.8 + depth)).max(1.2), (f.u * (2.2 + depth)).max(1.2));
-            let (cols, rows) = ((((pw - cw) / (cw * 2.0)) as i32).min(14), (((ph - ch) / (ch * 2.2)) as i32).min(70));
-            for iy in 0..rows {
-                for ix in 0..cols {
-                    let k = rnd.next();
-                    if k < 0.34 {
-                        let wc = if k < 0.03 { c(120, 220, 255) } else if k < 0.06 { c(255, 90, 160) } else { c(255, 206, 140) };
-                        rect(win, px0 + cw + ix as f32 * cw * 2.0, py + ch * 1.5 + iy as f32 * ch * 2.2, cw, ch, wc, 0.30 + 0.5 * depth);
-                    }
+    // the big screen on the central tower: what the sphere shows elsewhere (the clock, the weather, the agent's face,
+    // the door camera, alerts, countdowns), as a hologram
+    let fl2 = if still { 0.9 } else { 0.8 + 0.2 * (t * 7.0).sin().abs() * if (t * 0.5).rem_euclid(3.0) < 2.9 { 1.0 } else { 0.3 } };
+    if let Some(bd) = back.noir_board {
+        let (bx, by, bw, bh) = (ox + bd[0] / sf, oy + bd[1] / sf, bd[2] / sf, bd[3] / sf);
+        if let Some((px4, iw, ih)) = board_px {
+            // straight alpha for the GPU, the screen's own brightness
+            let mut px4 = px4;
+            for q in px4.chunks_exact_mut(4) {
+                q[3] = (q[3] as f32 * 0.88 * fl2) as u8;
+            }
+            if let Some(im) = image::RgbaImage::from_raw(iw, ih, px4) {
+                if let Some(old) = mem.board.replace(std::sync::Arc::new(gpui::RenderImage::new(vec![image::Frame::new(im)]))) {
+                    let _ = win.drop_image(old);
                 }
             }
-            if rnd.next() > 0.7 {
-                let blink = if (f.t * 0.7 + x * 40.0).fract() < 0.5 { 1.0 } else { 0.2 };
-                glow(win, px0 + pw / 2.0, py - f.u * 4.0, f.h * 0.008, c(255, 70, 70), blink);
+        }
+        // pulse-native: a billboard as in Tokyo: its steel frame, its light spilling on the haze around it
+        crate::draw::soft(win, bx, by + bh * 0.43, 0.0, bw * 0.95, 0.6, c(255, 120, 200), &[(0.0, 0.22 * fl2), (0.6, 0.08 * fl2), (1.0, 0.0)]);
+        rect(win, bx - bw / 2.0 - bh * 0.025, by - bh * 0.025, bw + bh * 0.05, bh * 0.86 + bh * 0.05, c(14, 15, 22), 1.0);
+        if let Some(im) = &mem.board {
+            let at = Bounds::new(point(px(bx - bw / 2.0), px(by)), size(px(bw), px(bh * 0.86)));
+            let _ = win.paint_image(at, at, gpui::Corners::default(), 0.0, im.clone(), 0, false);
+        }
+        crate::draw::frame(win, bx - bw / 2.0, by, bw, bh * 0.86, (h / 700.0).max(1.0), c(120, 230, 255), 0.6 * fl2);
+        if mem.logo.is_none() {
+            mem.logo = crate::street::tinted_logo([1.0, 120.0 / 255.0, 200.0 / 255.0]);
+        }
+        if let Some(lg) = &mem.logo {
+            let ls = bh * 0.1;
+            let at = Bounds::new(point(px(bx - bw / 2.0 + ls * 0.3), px(by + bh * 0.885)), size(px(ls), px(ls)));
+            let _ = win.paint_image(at, at, gpui::Corners::default(), 0.0, lg.clone(), 0, false);
+        }
+        crate::draw::text(win, cx, font, "OMARCHY", bx, by + bh * 0.97, (bh * 0.08).round(), 700.0, c(255, 120, 200), 0.9 * fl2, 0);
+        // (the LEDs make the lines pulse.js draws as scan lines; under the screen, a row of lamps on the frame)
+        for k in 0..12 {
+            let lx = bx - bw / 2.0 + bw * (k as f32 + 0.5) / 12.0;
+            rect(win, lx - 1.0, by + bh * 0.86 + bh * 0.008, 2.0, 2.0, c(255, 230, 190), if (t * 2.0 + k as f32 * 0.5).rem_euclid(2.0) < 1.6 || still { 0.85 } else { 0.25 });
+        }
+        gradient(win, bx - bw / 2.0, hz, bw, h * 0.2, c(120, 200, 255), 0.12 * fl2, c(120, 200, 255), 0.0); // its reflection on the wet street
+    }
+    // ---- drawNoir(t, hz, true): an amber haze over the street
+    gradient(win, ox, hz - h * 0.25, w, h * 0.21, c(255, 150, 60), 0.0, c(255, 150, 60), 0.16);
+    gradient(win, ox, hz - h * 0.04, w, h * 0.09, c(255, 150, 60), 0.16, c(255, 150, 60), 0.0);
+    // vertical neon signs, our own words
+    let signs: [(&str, C); 4] = [("OMARCHY", pal.accent2), ("PULSE", c(80, 230, 255)), ("ARCH", c(255, 90, 160)), ("NIGHT SHIFT", c(255, 190, 80))];
+    let fs = (h * 0.017).round();
+    for (i, (word, sc)) in signs.iter().enumerate() {
+        let (x, y) = match back.noir_signs.get(i) { Some(p) => (ox + p.0 / sf, oy + p.1 / sf), None => (ox + w * (0.29 + i as f32 * 0.14), hz - h * (0.33 - (i % 2) as f32 * 0.06)) };
+        let on = still || (t * 1.3 + i as f32 * 0.7).rem_euclid(4.0) > 0.15;
+        for (k, ch) in word.chars().enumerate() {
+            let yk = y + k as f32 * h * 0.02;
+            if on && ch != ' ' {
+                crate::draw::soft(win, x, yk - fs * 0.35, 0.0, h * 0.015 * 1.4, 1.0, *sc, &[(0.0, 0.45), (1.0, 0.0)]); // its glow (shadowBlur)
             }
-            if layer == 2 && rnd.next() > 0.6 {
-                // a neon sign down its side
-                let nc = if rnd.next() > 0.5 { c(255, 60, 150) } else { c(60, 220, 255) };
-                rect(win, px0 + pw * 0.1, py + ph * 0.2, (f.u * 3.0).max(1.5), ph * 0.3, nc, 0.9);
-                glow(win, px0 + pw * 0.1, py + ph * 0.35, ph * 0.18, nc, 0.25);
-            }
-            x += bw + rnd.next() * 0.006;
+            let mut b = [0u8; 4];
+            crate::draw::text(win, cx, font, ch.encode_utf8(&mut b), x, yk, fs, 700.0, *sc, if on { 0.9 } else { 0.25 }, 0);
         }
     }
-    // the hologram board over the city: the hour, and what the machine is doing
-    let (bw, bh) = (f.w * 0.20, f.h * 0.11);
-    let (bx, by) = (f.ox + f.w / 2.0 - bw / 2.0, f.oy + f.hz - f.h * 0.36);
-    let flick = 0.85 + 0.15 * (f.t * 13.0).sin();
-    rect(win, bx, by, bw, bh, c(60, 220, 255), 0.10 * flick);
-    for k in 0..12 {
-        rect(win, bx, by + bh * k as f32 / 12.0, bw, (f.u * 1.0).max(1.0), c(60, 220, 255), 0.18 * flick);
+    // the cars in the air
+    if mem.flyers.is_empty() {
+        mem.seed = 0x5eed_0f_a1;
+        for _ in 0..4 {
+            let (r1, r2, r3, r4) = (mem.rand(), mem.rand(), mem.rand(), mem.rand());
+            mem.flyers.push([r1 * w, f.hz - h * (0.2 + r2 * 0.25), if r3 < 0.5 { -1.0 } else { 1.0 } * w * (0.0006 + r4 * 0.0008)]);
+        }
     }
-    rect(win, bx, by, bw, (f.u * 2.0).max(1.0), c(60, 220, 255), 0.9);
-    rect(win, bx, by + bh, bw, (f.u * 2.0).max(1.0), c(60, 220, 255), 0.9);
-    let cpu = num(st, &["sys", "cpu"]).unwrap_or(0.0);
-    marks.push(PlaneMark { c: c(60, 220, 255), x: f.w / 2.0 - bw * 0.42, y: by - f.oy + bh * 0.28, title: format!("CPU {cpu:.0}% · {} agents", list(st, &["agents"]).len()), line: text(st, &["space", "launch", "mission"]) });
-    // cars in the air, between the towers
-    for i in 0..7 {
-        let dir = if i % 2 == 0 { 1.0 } else { -1.0 };
-        let lane = f.oy + f.hz - f.h * (0.07 + 0.045 * (i % 4) as f32);
-        let k = (f.t * (0.035 + 0.008 * i as f32) + i as f32 * 0.19).fract();
-        let x = f.ox + f.w * if dir > 0.0 { k * 1.1 - 0.05 } else { 1.05 - k * 1.1 };
-        rect(win, x - f.u * 7.0, lane, f.u * 14.0, f.u * 3.0, c(30, 32, 44), 1.0);
-        glow(win, x + dir * f.u * 8.0, lane + f.u * 1.5, f.u * 9.0, c(255, 240, 200), 0.8);
-        rect(win, x - dir * f.u * 8.0, lane + f.u * 0.5, f.u * 2.0, f.u * 2.0, pal.crit, 0.9);
-    }
-    // the wet street: the city's light smeared down it
-    for i in 0..26 {
-        let x = f.ox + f.w * (i as f32 + 0.5) / 26.0;
-        let wc = [c(255, 206, 140), c(60, 220, 255), c(255, 60, 150)][i % 3];
-        gradient(win, x - f.w * 0.012, f.oy + f.hz + f.u * 2.0, f.w * 0.024, (f.h - f.hz) * (0.25 + 0.35 * (((i * 37) % 11) as f32 / 11.0)), wc, 0.10, wc, 0.0);
+    for fl in mem.flyers.iter_mut() {
+        if !still {
+            fl[0] += fl[2] * frames;
+            if fl[0] < -w * 0.05 {
+                fl[0] = w * 1.05;
+            }
+            if fl[0] > w * 1.05 {
+                fl[0] = -w * 0.05;
+            }
+        }
+        let (d, s2) = (if fl[2] > 0.0 { 1.0 } else { -1.0 }, h * 0.012);
+        let (fx, fy) = (ox + fl[0], oy + fl[1]);
+        crate::draw::ellipse(win, fx, fy, s2 * 1.6, s2 * 0.45, c(20, 22, 30), 0.95);
+        crate::draw::poly_grad(win, &[(fx + d * s2 * 1.5, fy), (fx + d * s2 * 9.0, fy - s2), (fx + d * s2 * 9.0, fy + s2 * 1.2)], if d > 0.0 { 90.0 } else { 270.0 }, c(255, 240, 200), 0.5, c(255, 240, 200), 0.0);
+        rect(win, fx - d * s2 * 1.5, fy - 1.0, 2.0, 2.0, pal.crit, 0.9);
     }
     // the rain that never stops
-    let mut rain = PathBuilder::stroke(px((f.u * 1.0).max(1.0)));
-    for k in 0..220 {
-        let kf = k as f32;
-        let rx = (kf * 97.3 + f.t * f.w * 0.02 * (1.0 + (k % 3) as f32)).rem_euclid(f.w);
-        let ry = (kf * 53.7 + f.t * f.h * 0.9 * (1.0 + (k % 4) as f32 * 0.2)).rem_euclid(f.h);
-        rain.move_to(point(px(f.ox + rx), px(f.oy + ry)));
-        rain.line_to(point(px(f.ox + rx - f.h * 0.003), px(f.oy + ry + f.h * 0.025)));
-    }
-    if let Ok(p) = rain.build() {
-        win.paint_path(p, col(c(170, 210, 255), 0.22));
+    let segs: Vec<((f32, f32), (f32, f32))> = (0..220)
+        .map(|k| {
+            let kf = k as f32;
+            let rx = (kf * 97.3 + if still { 0.0 } else { t * w * 0.02 * (1.0 + (k % 3) as f32) }).rem_euclid(w);
+            let ry = (kf * 53.7 + if still { 0.0 } else { t * h * 0.9 * (1.0 + (k % 4) as f32 * 0.2) }).rem_euclid(h);
+            ((ox + rx, oy + ry), (ox + rx - h * 0.003, oy + ry + h * 0.025))
+        })
+        .collect();
+    crate::draw::lines(win, &segs, 1.0, c(170, 210, 255), 0.22);
+    // the wet street: the city's lights stretched on the asphalt
+    for k in 0..26 {
+        let x = ox + (k as f32 * 211.7).rem_euclid(w);
+        let lc = if k % 3 != 0 { c(255, 170, 90) } else if k % 2 != 0 { c(120, 220, 255) } else { c(255, 80, 160) };
+        gradient(win, x, hz, 2.0 + (k % 4) as f32, h * 0.16, lc, 0.14, lc, 0.0);
     }
 }

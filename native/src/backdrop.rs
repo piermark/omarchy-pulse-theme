@@ -4,7 +4,7 @@
 //! mirrors it all. It is painted in the screen's own pixels, kept as a picture, and painted again only when the
 //! light, the theme, the city or the screen change.
 
-use crate::cities_data::{city as city_of, Landmark};
+use crate::cities::{city as city_of, Lm};
 use crate::hub::{get, num, text};
 use crate::palette::Pal;
 use serde_json::Value;
@@ -67,11 +67,16 @@ pub struct Backdrop {
     pub sky_w: Option<[f32; 3]>,
     /// true when the picture changed at the last `update`
     pub fresh: bool,
+    /// scene = "noir": the megacity's antennas (their red lights), the places of its neon signs, and the big screen
+    /// on the central tower (x of its middle, top, width, height), in the picture's pixels
+    pub noir_tops: Vec<(f32, f32)>,
+    pub noir_signs: Vec<(f32, f32)>,
+    pub noir_board: Option<[f32; 4]>,
 }
 
 impl Default for Backdrop {
     fn default() -> Self {
-        Backdrop { key: String::new(), pixels: Vec::new(), w: 0, h: 0, tops: Vec::new(), low: [0.0; 3], air: [0.0; 3], sky_w: None, fresh: false }
+        Backdrop { key: String::new(), pixels: Vec::new(), w: 0, h: 0, tops: Vec::new(), low: [0.0; 3], air: [0.0; 3], sky_w: None, fresh: false, noir_tops: Vec::new(), noir_signs: Vec::new(), noir_board: None }
     }
 }
 
@@ -85,6 +90,16 @@ impl P<'_> {
             let mut p = Paint::default();
             p.set_color(col(c, a));
             p.anti_alias = false;
+            self.pm.fill_rect(r, &p, Transform::identity(), None);
+        }
+    }
+    /// A rectangle as the canvas fills it: its edges antialiased where they fall between pixels.
+    fn rect_aa(&mut self, x: f32, y: f32, w: f32, h: f32, c: Rgb, a: f32) {
+        if w <= 0.0 || h <= 0.0 { return }
+        if let Some(r) = Rect::from_xywh(x, y, w, h) {
+            let mut p = Paint::default();
+            p.set_color(col(c, a));
+            p.anti_alias = true;
             self.pm.fill_rect(r, &p, Transform::identity(), None);
         }
     }
@@ -164,7 +179,10 @@ impl Backdrop {
         let sky_w = if s.polished { sky_weights(s.st) } else { None };
         // the light changes slowly: a new picture every fiftieth of the way between night and day
         let q = |v: f32| (v * 50.0).round() as i32;
-        let key = format!("{}x{}|{}|{}|{:?}|{:?}|{:?}|{:?}|{:?}|{}|{:?}|{:.0},{:.0}|{}|{}", s.w, s.h, s.kind, city, bg, a2, ac, fg, warn, ph, sky_w.map(|w| [q(w[0]), q(w[1]), q(w[2])]), s.band.0, s.band.1, s.polished, s.world_off);
+        // pulse-native: where the Sun (or the Moon, at night) stands lights your landmarks from that side
+        let light = light_of(s.st, s.w as f32);
+        let lq = light.map(|l| ((l.0 / s.w.max(1) as f32 * 24.0).round() as i32, (l.2 * 10.0).round() as i32, l.1[2] as i32));
+        let key = format!("{}x{}|{}|{}|{:?}|{:?}|{:?}|{:?}|{:?}|{}|{:?}|{:.0},{:.0}|{}|{}", s.w, s.h, s.kind, city, bg, a2, ac, fg, warn, ph, sky_w.map(|w| [q(w[0]), q(w[1]), q(w[2])]), s.band.0, s.band.1, s.polished, s.world_off) + &format!("|{lq:?}");
         self.fresh = false;
         if key == self.key || s.w == 0 || s.h == 0 {
             return;
@@ -194,6 +212,12 @@ impl Backdrop {
         b.vgrad(0.0, 0.0, wf, hz + 1.0, 0.0, hz, &[(0.0, top, 1.0), (0.7, midc, 1.0), (1.0, low, 1.0)]);
         b.vgrad(0.0, hz, wf, hf - hz, hz, hf, &[(0.0, mix(bg, a2, 0.2), 1.0), (1.0, mix(bg, black, 0.5), 1.0)]);
         let (night_k, twi_k) = match sky_w { Some(wt) => (wt[0], wt[1]), None => (if ph == "night" { 1.0 } else { 0.0 }, if ph == "dawn" || ph == "dusk" { 1.0 } else { 0.0 }) };
+        self.noir_tops.clear();
+        self.noir_signs.clear();
+        self.noir_board = None;
+        if s.kind == "noir" {
+            self.megacity(&mut b, wf, hf, hz);
+        }
         if !s.world_off && s.kind != "noir" {
             // the far ridge (resize(): rnd(42), after the stars, the far blocks and the drops have taken theirs)
             let mut r = Rnd::new(42);
@@ -308,7 +332,7 @@ impl Backdrop {
             // your city, in front of the far blocks (pulse.js drawCity)
             if let Some(list) = city_of(&city) {
                 let r_core = hf * match s.kind { "sphere" => 0.165, "orbit" => 0.3, _ => 0.14 };
-                self.tops = Self::draw_city(&mut b, list, hz, cx, r_core, hf, s.band, bg, a2, ac, fg, warn);
+                self.tops = Self::draw_city(&mut b, &list, hz, cx, r_core, hf, s.band, bg, a2, ac, fg, warn, if s.polished { light } else { None }, if s.polished { night_k.max(twi_k * 0.6) } else { -1.0 });
             }
             self.tops.extend(far_tops);
             if s.polished {
@@ -377,12 +401,75 @@ impl Backdrop {
     /// pulse.js drawCity(): each landmark where the table says, filled with a gradient (or drawn as a line), with
     /// lit windows only inside its outline. Returns the tops that get a red light.
     #[allow(clippy::too_many_arguments)]
-    fn draw_city(b: &mut P, list: &[Landmark], hz: f32, cx: f32, r_core: f32, hf: f32, band: (f32, f32), bg: Rgb, a2: Rgb, ac: Rgb, fg: Rgb, warn: Rgb) -> Vec<(f32, f32)> {
+    /// pulse.js paintMegacity(): scene = "noir", a futuristic megacity at night: its own sky and street, three layers
+    /// of towers with thousands of windows, antennas, light strips, the central tower that carries the big screen.
+    fn megacity(&mut self, b: &mut P, wf: f32, hf: f32, hz: f32) {
+        let mut r = Rnd::new(4242);
+        b.vgrad(0.0, 0.0, wf, hz + 1.0, 0.0, hz, &[(0.0, [6.0, 9.0, 18.0], 1.0), (0.55, [22.0, 30.0, 48.0], 1.0), (1.0, [92.0, 64.0, 48.0], 1.0)]);
+        b.vgrad(0.0, hz, wf, hf - hz, hz, hf, &[(0.0, [24.0, 22.0, 30.0], 1.0), (1.0, [6.0, 6.0, 10.0], 1.0)]);
+        let layers: [(usize, f32, f32, f32, f32, Rgb, f32); 3] = [
+            (70, 0.008, 0.026, 0.12, 0.42, [44.0, 52.0, 70.0], 0.06),
+            (40, 0.018, 0.05, 0.2, 0.58, [26.0, 30.0, 44.0], 0.2),
+            (15, 0.035, 0.085, 0.32, 0.74, [12.0, 13.0, 20.0], 0.12),
+        ];
+        for (li, l) in layers.iter().enumerate() {
+            for _ in 0..l.0 {
+                let w = wf * (l.1 + r.next() * (l.2 - l.1));
+                let x = r.next() * (wf + w) - w;
+                let h = hf * (l.3 + r.next() * (l.4 - l.3)) * (0.75 + 0.25 * (x / wf * std::f32::consts::PI).sin());
+                let mut top = hz - h;
+                b.rect_aa(x, top, w, h, l.5, 1.0);
+                if li > 0 && r.next() < 0.5 {
+                    b.rect_aa(x + w * 0.2, top - h * 0.08, w * 0.6, h * 0.08, l.5, 1.0); // a setback
+                    top -= h * 0.08;
+                }
+                if r.next() < 0.4 {
+                    b.rect_aa(x + w / 2.0 - 1.0, top - hf * 0.03, 2.0, hf * 0.03, l.5, 1.0); // an antenna
+                    self.noir_tops.push((x + w / 2.0, top - hf * 0.03));
+                }
+                let (cw, ch) = ((w / 9.0).max(2.0), (hf / 260.0).max(2.0));
+                let mut yy = top + ch * 3.0;
+                while yy < hz - ch {
+                    let mut xx = x + cw;
+                    while xx < x + w - cw {
+                        if r.next() < l.6 {
+                            if r.next() < 0.7 {
+                                let a = 0.35 + r.next() * 0.5;
+                                b.rect_aa(xx, yy, cw * 0.8, ch, [255.0, 190.0, 110.0], a);
+                            } else {
+                                let a = 0.3 + r.next() * 0.5;
+                                b.rect_aa(xx, yy, cw * 0.8, ch, [120.0, 220.0, 255.0], a);
+                            }
+                        }
+                        xx += cw * 1.8;
+                    }
+                    yy += ch * 2.6;
+                }
+                if li == 2 && r.next() < 0.6 {
+                    b.rect_aa(x + w * 0.1, top + h * 0.1, 2.0, h * 0.8, [255.0, 70.0, 140.0], 0.35); // a light strip
+                }
+                if li == 1 && self.noir_signs.len() < 5 && x > wf * 0.24 && x < wf * 0.74 && (x + w * 0.5 - wf / 2.0).abs() > hf * 0.24 && r.next() < 0.35 {
+                    self.noir_signs.push((x + w * 0.5, (top + h * 0.15).max(hz - hf * 0.3)));
+                }
+            }
+        }
+        // the central tower that carries the big screen: where the sphere is in the other scenes
+        self.noir_board = Some([wf / 2.0, hz - hf * 0.27, hf * 0.31, hf * 0.22]);
+        b.rect_aa(wf / 2.0 - hf * 0.12, hz - hf * 0.58, hf * 0.24, hf * 0.58, [10.0, 11.0, 17.0], 1.0);
+        b.rect_aa(wf / 2.0 - hf * 0.03, hz - hf * 0.66, hf * 0.06, hf * 0.08, [10.0, 11.0, 17.0], 1.0);
+        self.noir_tops.push((wf / 2.0, hz - hf * 0.66));
+    }
+
+    /// pulse.js drawCity(). `light`: where the Sun or the Moon is (x), its colour and strength; `dark`: how much it
+    /// is night (-1 for pulse.js's own look, without what pulse-native adds: the side lit by the Sun or the Moon,
+    /// floors of windows, floodlights on the monuments, the torch of the Statue of Liberty).
+    fn draw_city(b: &mut P, list: &[Lm], hz: f32, cx: f32, r_core: f32, hf: f32, band: (f32, f32), bg: Rgb, a2: Rgb, ac: Rgb, fg: Rgb, warn: Rgb, light: Option<(f32, Rgb, f32)>, dark: f32) -> Vec<(f32, f32)> {
         let mut tops = Vec::new();
         let ex = r_core * 1.25;
         let (left, right) = ((band.0, cx - ex), (cx + ex, band.1));
         let body = mix(bg, a2, 0.3);
         let mut r2 = Rnd::new(97);
+        let more = dark >= 0.0;
         for l in list {
             let u = l.x.abs();
             let x = if l.x < 0.0 { left.1 - u * (left.1 - left.0) } else { right.0 + u * (right.1 - right.0) };
@@ -401,6 +488,12 @@ impl Backdrop {
                     let mut p = Paint::default();
                     p.set_color(col(mix(body, fg, 0.45), 1.0));
                     b.pm.stroke_path(&path, &p, &Stroke { width: (hf / 420.0).max(1.2), ..Default::default() }, Transform::identity(), None);
+                    if more && dark > 0.2 {
+                        // a bridge at night: the lamps along its cables
+                        let mut p = Paint::default();
+                        p.set_color(col(mix(warn, fg, 0.5), 0.35 * dark));
+                        b.pm.stroke_path(&path, &p, &Stroke { width: (hf / 300.0).max(1.5), dash: tiny_skia::StrokeDash::new(vec![1.5, hf / 180.0], 0.0), ..Default::default() }, Transform::identity(), None);
+                    }
                 }
             } else {
                 if let Some(path) = P::path(&subs, true) {
@@ -408,17 +501,72 @@ impl Backdrop {
                     if let Some(sh) = LinearGradient::new((0.0, hz - h).into(), (0.0, hz).into(), st, SpreadMode::Pad, Transform::identity()) {
                         b.pm.fill_path(&path, &Paint { shader: sh, anti_alias: true, ..Default::default() }, FillRule::EvenOdd, Transform::identity(), None);
                     }
+                    if more {
+                        // pulse-native: a volume, lit from where the Sun or the Moon is; the other side in shade
+                        let (lx, lc, ls) = light.unwrap_or((x + w, fg, 0.0));
+                        let from_left = lx < x;
+                        let (x0, x1) = if from_left { (x - w / 2.0, x + w / 2.0) } else { (x + w / 2.0, x - w / 2.0) };
+                        let stops = vec![
+                            GradientStop::new(0.0, col(lc, 0.34 * ls)),
+                            GradientStop::new(0.35, col(lc, 0.08 * ls)),
+                            GradientStop::new(0.62, col([0.0; 3], 0.0)),
+                            GradientStop::new(1.0, col([0.0; 3], 0.20 + 0.10 * ls)),
+                        ];
+                        if let Some(sh) = LinearGradient::new((x0, 0.0).into(), (x1, 0.0).into(), stops, SpreadMode::Pad, Transform::identity()) {
+                            b.pm.fill_path(&path, &Paint { shader: sh, anti_alias: true, ..Default::default() }, FillRule::EvenOdd, Transform::identity(), None);
+                        }
+                        // monuments are floodlit at night: warm light from their foot, fading up (the Redeemer white)
+                        let monument = matches!(l.name, "colosseum" | "dome" | "arch" | "gate" | "capitol" | "temple" | "liberty" | "redeemer" | "taj" | "rockdome" | "clock" | "gothic" | "parliament" | "castle" | "mosque" | "sagrada" | "lattice" | "obelisk" | "campanile" | "leaning" | "twinspire" | "onion" | "pagoda" | "prang" | "mole" | "twotowers" | "roundtemple" | "shells" | "minaret" | "congress");
+                        if monument && dark > 0.15 {
+                            let fc = if l.name == "redeemer" { [235.0, 242.0, 255.0] } else if l.name == "lattice" { [255.0, 196.0, 110.0] } else { mix(warn, [255.0, 226.0, 180.0], 0.6) };
+                            let k = if l.name == "redeemer" || l.name == "lattice" { 0.75 } else { 0.5 };
+                            let stops = vec![GradientStop::new(0.0, col(fc, k * dark)), GradientStop::new(0.55, col(fc, k * 0.35 * dark)), GradientStop::new(1.0, col(fc, 0.0))];
+                            if let Some(sh) = LinearGradient::new((0.0, hz).into(), (0.0, hz - h).into(), stops, SpreadMode::Pad, Transform::identity()) {
+                                b.pm.fill_path(&path, &Paint { shader: sh, anti_alias: true, ..Default::default() }, FillRule::EvenOdd, Transform::identity(), None);
+                            }
+                        }
+                    }
                     let mut p = Paint::default();
                     p.set_color(col(mix(a2, fg, 0.35), 0.75));
                     b.pm.stroke_path(&path, &p, &Stroke { width: (hf / 800.0).max(1.0), ..Default::default() }, Transform::identity(), None);
                 }
-                // lit windows, only inside the outline
-                let nwin = if l.nat { 0 } else if l.flat { 30 } else { (12.0 + 90.0 * w * h / (hf * hf) * 10.0).round() as usize };
-                for _ in 0..nwin {
-                    let (px, py, ws) = (x + (r2.next() - 0.5) * w, hz - r2.next() * h * 0.9, (hf / 500.0).max(1.0));
-                    if inside(&subs, px, py) {
-                        let wc = if r2.next() < 0.3 { warn } else { ac };
-                        b.rect(px, py, ws, ws * 1.4, wc, 0.35 + r2.next() * 0.45);
+                let tower = !l.nat && !l.flat && !matches!(l.name, "colosseum" | "dome" | "arch" | "gate" | "temple" | "liberty" | "redeemer" | "taj" | "rockdome" | "obelisk" | "lattice" | "mosque" | "onion" | "pyramid" | "shells" | "congress");
+                if more && tower {
+                    // pulse-native: windows by floors, as a tower has them, more of them lit as night falls
+                    let ws = (hf / 560.0).max(1.0);
+                    let lit = 0.10 + 0.55 * dark;
+                    let mut yy = hz - ws * 3.0;
+                    while yy > hz - h * 0.94 {
+                        let floor_on = r2.next() < 0.85;
+                        let mut xx = x - w / 2.0 + ws;
+                        while xx < x + w / 2.0 - ws {
+                            let k = r2.next();
+                            if floor_on && k < lit && inside(&subs, xx + ws / 2.0, yy + ws * 0.7) && inside(&subs, xx + ws / 2.0, yy - ws * 0.4) {
+                                let wc = if k < lit * 0.3 { warn } else if k < lit * 0.4 { mix(ac, fg, 0.4) } else { mix(warn, fg, 0.55) };
+                                b.rect(xx, yy, ws, ws * 1.4, wc, 0.30 + 0.5 * (k / lit.max(0.01)));
+                            }
+                            xx += ws * 2.3;
+                        }
+                        yy -= ws * 3.1;
+                    }
+                } else {
+                    // lit windows, only inside the outline
+                    let nwin = if l.nat { 0 } else if l.flat { 30 } else { (12.0 + 90.0 * w * h / (hf * hf) * 10.0).round() as usize };
+                    for _ in 0..nwin {
+                        let (px, py, ws) = (x + (r2.next() - 0.5) * w, hz - r2.next() * h * 0.9, (hf / 500.0).max(1.0));
+                        if inside(&subs, px, py) {
+                            let wc = if r2.next() < 0.3 { warn } else { ac };
+                            b.rect(px, py, ws, ws * 1.4, wc, 0.35 + r2.next() * 0.45);
+                        }
+                    }
+                }
+                if more && l.name == "liberty" {
+                    // her torch: always lit, bright at night
+                    let (tx, ty) = (x + 0.082 * h, hz - h * 0.985);
+                    let r = hf * 0.02;
+                    let stops = vec![GradientStop::new(0.0, col([255.0, 236.0, 170.0], 0.55 + 0.4 * dark)), GradientStop::new(0.25, col([255.0, 190.0, 90.0], 0.25 + 0.3 * dark)), GradientStop::new(1.0, col([255.0, 170.0, 80.0], 0.0))];
+                    if let (Some(sh), Some(rc)) = (RadialGradient::new((tx, ty).into(), (tx, ty).into(), r, stops, SpreadMode::Pad, Transform::identity()), Rect::from_xywh(tx - r, ty - r, r * 2.0, r * 2.0)) {
+                        b.pm.fill_rect(rc, &Paint { shader: sh, anti_alias: true, ..Default::default() }, Transform::identity(), None);
                     }
                 }
             }
@@ -428,4 +576,26 @@ impl Backdrop {
         }
         tops
     }
+}
+
+/// pulse-native: the light on your landmarks: the Sun when it is up (warm when low), else the Moon (cool, fainter):
+/// where it is across the screen, its colour, its strength (0..1).
+fn light_of(st: &Value, w: f32) -> Option<(f32, Rgb, f32)> {
+    let at = |az: f32| (w / 2.0 + ((az - 180.0) / 90.0).clamp(-1.4, 1.4) * w * 0.44).clamp(-w * 0.2, w * 1.2);
+    let sun = get(st, &["night", "sun"]);
+    if let (Some(az), Some(el)) = (num(sun, &["az"]), num(sun, &["el"])) {
+        let (az, el) = (az as f32, el as f32);
+        if el > -3.0 {
+            let k = ((el + 3.0) / 12.0).clamp(0.0, 1.0);
+            let warm = (1.0 - el / 18.0).clamp(0.0, 1.0);
+            return Some((at(az), mix([255.0, 244.0, 225.0], [255.0, 170.0, 100.0], warm), 0.35 + 0.6 * k));
+        }
+    }
+    let moon = get(st, &["night", "moon"]);
+    if let (Some(az), Some(el)) = (num(moon, &["az"]), num(moon, &["el"])) {
+        if el > 0.0 {
+            return Some((at(az as f32), [170.0, 192.0, 255.0], 0.4));
+        }
+    }
+    None
 }

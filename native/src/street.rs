@@ -367,15 +367,7 @@ impl Street {
                 return Some(i.clone());
             }
         }
-        // the Omarchy icon (Dashboard Icons, Apache-2.0), in your theme's colour (source-in)
-        let im = image::load_from_memory(include_bytes!("../../extras/pulse/web/omarchy.png")).ok()?.resize_exact(128, 128, image::imageops::FilterType::Triangle).to_rgba8();
-        let mut px4 = im.into_raw();
-        for p in px4.chunks_exact_mut(4) {
-            p[0] = (c[2] * 255.0) as u8;
-            p[1] = (c[1] * 255.0) as u8;
-            p[2] = (c[0] * 255.0) as u8;
-        }
-        let img = Arc::new(gpui::RenderImage::new(vec![image::Frame::new(image::RgbaImage::from_raw(128, 128, px4)?)]));
+        let img = tinted_logo(c)?;
         if let Some((_, old)) = self.logo.replace((c, img.clone())) {
             let _ = win.drop_image(old);
         }
@@ -505,4 +497,16 @@ impl Street {
             mid_text(win, cx, font, tag, x + sw, sy - h * 0.011, fs2, 700.0, if b.warn { pal.warn } else { pal.accent }, fade);
         }
     }
+}
+
+/// The Omarchy icon (Dashboard Icons, Apache-2.0), in one colour (source-in), for the GPU.
+pub fn tinted_logo(c: C) -> Option<Arc<gpui::RenderImage>> {
+    let im = image::load_from_memory(include_bytes!("../../extras/pulse/web/omarchy.png")).ok()?.resize_exact(128, 128, image::imageops::FilterType::Triangle).to_rgba8();
+    let mut px4 = im.into_raw();
+    for p in px4.chunks_exact_mut(4) {
+        p[0] = (c[2] * 255.0) as u8;
+        p[1] = (c[1] * 255.0) as u8;
+        p[2] = (c[0] * 255.0) as u8;
+    }
+    Some(Arc::new(gpui::RenderImage::new(vec![image::Frame::new(image::RgbaImage::from_raw(128, 128, px4)?)])))
 }

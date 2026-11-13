@@ -4,7 +4,7 @@ A parallel renderer for Omarchy Pulse. The web page stays the default (and is wh
 paints the same wallpaper natively on the GPU, with no browser underneath. It reads the same hub: the same
 `omarchy-pulse` service, the same token and the same `pulse.toml`.
 
-**Status: 0.16, experimental.** The web page stays the default. This renderer is being made a line-by-line
+**Status: 0.17, experimental.** The web page stays the default. This renderer is being made a line-by-line
 translation of the published Pulse 1.8 (`pulse.js` and `pulse.css`), so that it looks and moves the same, and a
 little more like a game where the web page cannot: lights that burn white at their core (the canvas's "lighter"
 mode, which GPUI does not have), the Sun's starburst and lens flare, beams of the sphere's light turning in the wet
@@ -58,7 +58,8 @@ cd ~/pulse-native && git pull && cd native && cargo build --release && ./install
 | `--window` | an ordinary window instead of the wallpaper |
 | `--scene S` | `skyline`, `sphere`, `orbit`, `calm`, `hacker`, `noir`, `mars`, `monolith`, `pond`, `city`; by default the hub's `[pulse] scene` |
 | `--fps N` | the most frames a second, 5 to 60 (default: the hub's `[pulse] fps`, else 20) |
-| `--cpu N` | the most of one core it may use, in percent (default 15; also `PULSE_CPU`) |
+| `--cpu N` | the most of one core it may use, in percent (also `PULSE_CPU`); by default 15 on a laptop, 25 on a desktop, up to twice that on a big screen (the square root of its pixels over 1080p's) |
+| `--calm N` | frames a second when nothing fast moves (also `PULSE_CALM_FPS`); by default 10 on a laptop, 20 on a desktop |
 | `--gpu G` | `auto` (default), `gl` or `vulkan` (also `PULSE_GPU`): `auto` draws with OpenGL on Intel Ivy Bridge and Haswell |
 | `--url URL` | the hub (default `http://127.0.0.1:` + `PULSE_PORT` or `[pulse] port`) |
 | `--font NAME` | the font (default: `[pulse] font`, else CaskaydiaMono Nerd Font) |
@@ -75,8 +76,9 @@ not as big as the screen (see `vendor/gpui_ce_wgpu/PULSE-NATIVE.md`): the same a
 traffic, which is what held back older GPUs and 4K screens. Everything stays at the screen's full resolution.
 
 Frames come at an even pace; when nothing fast moves (no music, nothing falling, no fireworks, launch or shooting
-star, no pointer to follow) 10 frames a second are drawn, 6 while you are away, all of them when something does. The
-wallpaper stays under its CPU budget (`--cpu`), measured as `top` measures it: the whole process, the GPU driver
+star, no pointer to follow) 10 frames a second are drawn on a laptop and 20 on a desktop (`--calm`), 6 while you are
+away, all of them when something does. The wallpaper stays under its CPU budget (`--cpu`; 15% on a laptop, 25% on a
+desktop, more on a big screen), measured as `top` measures it: the whole process, the GPU driver
 included, every two seconds; over it the frames a second come down at once (never under 6), well under it they come
 back one at a time. Under a fullscreen window it draws once a second; covered, not at all. Memory freed is given back
 to the system once a minute.
@@ -141,6 +143,15 @@ From the same state the web page reads:
 
 ## Changes
 
+- **0.17**: the noir scene translated from pulse.js (the megacity, its searchlights, signs, cars in the air), its big
+  screen a giant LED billboard; on Mars the flights are flying saucers with their tags, and a colony grows from your
+  data (a ship that flies with Earth's next real launch, solar farm, greenhouses, colonists, supply pods for your
+  updates, orbiters, a scout helicopter); your city's landmarks lit from where the Sun or the Moon is, with floors of
+  windows and floodlit monuments, the Statue of Liberty in New York, Christ the Redeemer in Rio and new cities
+  (Verona, Palermo, Catania, Trieste, Bari, Agra, St Petersburg, Philadelphia, Houston, Dallas, Denver, Jerusalem,
+  Marrakesh, Casablanca, Brasília, Macau); a × hides a panel in layout edit; the CPU budget and the calm frame rate
+  follow the computer (issue #42); full resolution at any scale (up to 3×); day stays day when the hub has no
+  location; a plane beside a panel no longer jumps back under it once a second.
 - **0.16**: the shapes GPUI draws in groups cost a whole screen of memory per group (about 60 a frame): now only as
   much as the group, with the same quality; slanted shapes made without the tessellator; the sphere's screen painted
   once and its pixels in a faster loop; the CPU budget measured on the whole process; OpenGL on Ivy Bridge and
@@ -151,8 +162,8 @@ From the same state the web page reads:
 
 - community scenes written in JavaScript by other people cannot run here (there is no JavaScript engine): they show
   the skyline and say so. The three that come with Pulse (mars, monolith, pond) are written again in Rust;
-- the neo-noir scene (`noir`) is still pulse-native's own drawing of it;
-- in layout edit the right button hides a panel and shows it again (the web page has a × on it);
+- what pulse-native adds is its own (Mars's colony and saucers, the lit landmarks, the extra cities, the LED
+  billboard): the web page does not have it;
 - some pieces written from pulse.js in the first versions are not yet compared line by line again: the
   earthquake, Christmas and the new year, Pulse Net, the garden, the workspaces tower, the friends, the parcels.
 

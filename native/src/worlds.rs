@@ -34,6 +34,8 @@ pub struct Mem {
     prev: Option<Value>,
     said: HashMap<String, f64>,
     seen: f64,
+    /// pulse-native: the updates the last supply pod brought, and when the newest one came down
+    supply: (i64, f64),
 }
 
 impl Default for Mem {
@@ -48,7 +50,7 @@ impl Default for Mem {
         let mut hh = 0.5f32;
         let ridge = (0..=64).map(|_| { hh = (hh + (r.next() - 0.5) * 0.22).clamp(0.1, 1.0); hh }).collect();
         let devil = [r.next(), r.next()];
-        Mem { r, stars, far, mesa, rocks, dust, devil, ridge, rov: HashMap::new(), lift: HashMap::new(), flash: HashMap::new(), go: Vec::new(), puffs: Vec::new(), pulses: Vec::new(), met: None, orb: HashMap::new(), rip: Vec::new(), fish: HashMap::new(), prev: None, said: HashMap::new(), seen: 0.0 }
+        Mem { r, stars, far, mesa, rocks, dust, devil, ridge, rov: HashMap::new(), lift: HashMap::new(), flash: HashMap::new(), go: Vec::new(), puffs: Vec::new(), pulses: Vec::new(), met: None, orb: HashMap::new(), rip: Vec::new(), fish: HashMap::new(), prev: None, said: HashMap::new(), seen: 0.0, supply: (-1, -100.0) }
     }
 }
 
@@ -82,7 +84,7 @@ pub fn view(st: &Value, local_secs: i64) -> Value {
     v["git"] = Value::Array(list(st, &["git"]).iter().map(|a| hide(a, &["name", "branch"])).collect());
     v["time"] = json!({ "hour": sod / 3600, "minute": (sod / 60) % 60 });
     let launch_in = num(st, &["space", "launch", "net"]).map(|n| n - now);
-    v["space"] = json!({ "sun": num(st, &["night", "sun", "el"]), "kp": num(st, &["space", "kp"]).unwrap_or(0.0), "launchIn": launch_in });
+    v["space"] = json!({ "sun": num(st, &["night", "sun", "el"]), "kp": num(st, &["space", "kp"]).unwrap_or(0.0), "launchIn": launch_in, "mission": text(st, &["space", "launch", "mission"]) });
     v["panels"] = Value::Object(panels);
     v["events"] = json!([]);
     v
@@ -319,6 +321,38 @@ pub fn mars(win: &mut Window, sv: &Value, f: &Frame, mem: &mut Mem, t: f64, labe
         for d in mem.dust.iter().take((3.0 + cloud * 7.0).round() as usize) {
             let ccx = ((d[0] + tt * 0.0012 * d[2]).rem_euclid(1.3) - 0.15) * w;
             g.arcf(ccx, hz * (0.12 + d[1] * 0.42), w * (0.07 + d[3] * 0.08), h * (0.004 + d[2] * 0.005), -0.05, 0.0, TAU, mix(hor, WHITE, 0.55), 0.05 + 0.07 * cloud);
+        }
+    }
+
+    // ---- pulse-native: no planes fly on Mars. What crosses its sky instead are the real orbiters (the Mars
+    // Reconnaissance Orbiter, MAVEN, the Trace Gas Orbiter), lit by the Sun after dusk and before dawn, as satellites
+    // are on Earth: a slow point of light, its panels flashing once as it turns
+    if wn + wt * 0.6 > 0.15 {
+        let vis = (wn + wt * 0.6).min(1.0);
+        for (i, (name, what, period, phase, tilt)) in [
+            ("MRO", "Mars Reconnaissance Orbiter · relays the rovers' pictures to Earth", 113.0f32, 0.1f32, 0.10f32),
+            ("MAVEN", "MAVEN · studies how Mars lost its air", 151.0, 0.55, -0.16),
+            ("TGO", "ExoMars Trace Gas Orbiter · sniffs the air for methane", 127.0, 0.8, 0.05),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let p = (tt / period + phase).rem_euclid(1.0);
+            if p > 0.45 {
+                continue; // below the horizon for the rest of its orbit
+            }
+            let k = p / 0.45; // west to east, an arc over the colony
+            let x = w * (0.08 + 0.84 * k);
+            let y = hz * (0.62 - 0.42 * (k * PI).sin() + tilt * (k - 0.5));
+            let fade = cl(k * 8.0).min(cl((1.0 - k) * 8.0)) * vis;
+            let flare = if still { 0.0 } else { (-((k - 0.3 - i as f32 * 0.17).powi(2)) / 0.0006).exp() };
+            g.glow(x, y, h * (0.006 + 0.02 * flare), c8(255, 246, 230), (0.35 + 0.65 * flare) * fade);
+            g.rect(x - u * 0.8, y - u * 0.8, (u * 1.6).max(1.0), (u * 1.6).max(1.0), c8(255, 250, 240), 0.9 * fade);
+            let pw = (u * 2.6).max(1.5);
+            g.rect(x - u * 1.2 - pw, y - u * 0.35, pw, (u * 0.7).max(1.0), c8(150, 180, 230), 0.6 * fade);
+            g.rect(x + u * 1.2, y - u * 0.35, pw, (u * 0.7).max(1.0), c8(150, 180, 230), 0.6 * fade);
+            label(labels, x + u * 6.0, y - u * 4.0, h * 0.0085, c8(220, 228, 245), 0.45 * fade, name.into(), false);
+            hits.push(Hit { x, y, r: h * 0.02, text: what.into() });
         }
     }
 
@@ -599,6 +633,255 @@ pub fn mars(win: &mut Window, sv: &Value, f: &Frame, mem: &mut Mem, t: f64, labe
         label(labels, x, y + s * 0.3 + h * 0.004, h * 0.0105, ink, 0.8 * quiet, name.chars().take(16).collect(), false);
         let what = text(ag, &["text"]);
         hits.push(Hit { x, y: y - s, r: s * 2.4, text: format!("{} · {stt}{}", if name.is_empty() { "a rover".into() } else { name }, if what.is_empty() { String::new() } else { format!(" · {}", what.chars().take(40).collect::<String>()) }) });
+    }
+
+    // ---- pulse-native: the colony grows, and everything in it is something of yours that is real
+    {
+        let lin = num(sv, &["space", "launchIn"]).map(|v| v as f32);
+        let mission = text(sv, &["space", "mission"]);
+        // the spaceport: a steel ship on its launch mount. Pulse's next real launch on Earth is its countdown: in the
+        // last hour it is fuelled (frost on its tanks, vapour venting), at the real lift-off it lifts off from Mars
+        let (sx, sbase, sh) = (cx + w * 0.235, hz + h * 0.012, h * 0.15);
+        let sw = sh * 0.115;
+        let since = lin.map(|v| -v).unwrap_or(-1.0);
+        let flying = (0.0..300.0).contains(&since) && !still;
+        let lift = if flying { (since / 300.0).powf(2.2) * (hz + sh) * 1.2 } else { 0.0 };
+        let tower = lit(STEEL, 0.75);
+        g.rect(sx + sw * 1.1, sbase - sh * 1.12, sw * 0.55, sh * 1.12, tower, 0.95);
+        for k in 0..9 {
+            let yk = sbase - sh * 1.12 * k as f32 / 9.0;
+            g.line(&[(sx + sw * 1.1, yk), (sx + sw * 1.65, yk - sh * 0.12)], (u * 0.8).max(1.0), mix(tower, WHITE, 0.2), 0.6);
+        }
+        if !flying {
+            g.rect(sx + sw * 0.5, sbase - sh * 0.86, sw * 0.62, sh * 0.03, tower, 0.95); // the arms that hold it
+        }
+        g.rect(sx - sw * 1.4, sbase - sh * 0.05, sw * 2.8, sh * 0.05, mix(tower, DEEP, 0.4), 1.0); // the mount
+        let by = sbase - sh * 0.05 - lift;
+        if flying {
+            let k = cl(since / 6.0);
+            let fl = (tt * 40.0).sin() * 0.08 + 1.0;
+            g.glow(sx, by + sh * 0.05, sh * (0.35 + 0.25 * k) * fl, c8(255, 190, 110), 0.9);
+            g.poly(&[(sx - sw * 0.42, by), (sx + sw * 0.42, by), (sx + sw * 0.15, by + sh * 0.5 * fl * k), (sx, by + sh * 0.62 * fl * k), (sx - sw * 0.15, by + sh * 0.5 * fl * k)], c8(255, 214, 150), 0.95);
+            if since < 60.0 {
+                // the dust it throws up from the pad
+                let c = cl(1.0 - since / 60.0);
+                g.glow(sx, sbase, sh * (0.6 + since / 40.0), c8(214, 150, 104), 0.6 * c);
+            }
+        }
+        if by + sh > -h * 0.1 {
+            let steel = lit(c8(206, 210, 216), 1.05);
+            g.rect(sx - sw / 2.0, by - sh, sw, sh, steel, 1.0);
+            g.rect(sx + sw * 0.18, by - sh, sw * 0.32, sh, mix(steel, DEEP, 0.35), 0.6); // its round side in shade
+            g.poly(&[(sx - sw / 2.0, by - sh), (sx + sw / 2.0, by - sh), (sx + sw * 0.36, by - sh * 1.08), (sx + sw * 0.12, by - sh * 1.14), (sx, by - sh * 1.15), (sx - sw * 0.12, by - sh * 1.14), (sx - sw * 0.36, by - sh * 1.08)], steel, 1.0);
+            for (fy, fh) in [(by - sh * 1.06, sh * 0.08), (by - sh * 0.14, sh * 0.13)] {
+                g.poly(&[(sx - sw / 2.0, fy), (sx - sw * 0.95, fy + fh * 0.4), (sx - sw * 0.95, fy + fh), (sx - sw / 2.0, fy + fh)], mix(steel, DEEP, 0.25), 1.0);
+                g.poly(&[(sx + sw / 2.0, fy), (sx + sw * 0.95, fy + fh * 0.4), (sx + sw * 0.95, fy + fh), (sx + sw / 2.0, fy + fh)], mix(steel, DEEP, 0.45), 1.0);
+            }
+            let fuel = lin.map(|v| v > 0.0 && v < 3600.0).unwrap_or(false);
+            if fuel && !flying {
+                g.rect(sx - sw / 2.0, by - sh * 0.62, sw, sh * 0.6, WHITE, 0.30); // frost where the cold propellant is
+                if !still {
+                    for k in 0..3 {
+                        let a = (tt * 0.6 + k as f32 * 0.33).fract();
+                        g.glow(sx + (k as f32 - 1.0) * sw * 0.9 + a * sw * 2.0, by - sh * (0.35 + a * 0.3), sh * (0.05 + a * 0.12), WHITE, 0.35 * (1.0 - a));
+                    }
+                }
+            }
+            if (tt * 0.8).fract() < 0.1 {
+                g.glow(sx, by - sh * 1.15, sh * 0.05, CRIT, 0.9);
+            }
+        }
+        let tag = match lin {
+            Some(v) if v > 0.0 => {
+                let s = v as i64;
+                if s >= 86400 { format!("next window · {} days", s / 86400) } else if s >= 3600 { format!("T−{}h{:02}", s / 3600, (s / 60) % 60) } else { format!("T−{:02}:{:02}", s / 60, s % 60) }
+            }
+            Some(v) if v > -300.0 => "liftoff".into(),
+            _ => String::new(),
+        };
+        label(labels, sx, sbase + h * 0.016, h * 0.0095, ink, 0.75 * quiet, tag.clone(), false);
+        hits.push(Hit { x: sx, y: by - sh * 0.5, r: sh * 0.6, text: format!("the ship · it flies with Earth's next launch{}{}", if mission.is_empty() { String::new() } else { format!(" ({mission})") }, if tag.is_empty() { String::new() } else { format!(" · {tag}") }) });
+
+        // the solar farm: your solar power (Pulse's energy), each row of panels catching the Sun as much as your
+        // roof does now
+        let solar = num(sv, &["energy", "solar"]).map(|v| v as f32);
+        let peak = num(sv, &["energy", "peak"]).map(|v| v as f32).unwrap_or(5000.0).max(1.0);
+        let sk = solar.map(|v| cl(v / peak)).unwrap_or(wd);
+        let (fx0, fy0) = (cx - w * 0.245, hz + h * 0.125);
+        for row in 0..4 {
+            let yy = fy0 + row as f32 * h * 0.017;
+            let ph = h * 0.011;
+            let n = 7 + row;
+            let pw = w * 0.0135 * (1.0 + row as f32 * 0.08);
+            for k in 0..n {
+                let xx = fx0 - row as f32 * w * 0.006 + k as f32 * pw * 1.12;
+                g.line(&[(xx + pw * 0.5, yy), (xx + pw * 0.5, yy + ph * 0.9)], (u * 0.7).max(1.0), STEEL, 0.8);
+                g.poly(&[(xx, yy + ph * 0.55), (xx + pw, yy + ph * 0.55), (xx + pw * 0.9, yy), (xx + pw * 0.1, yy)], lit(PANEL, 1.0 + sk * 0.4), 1.0);
+                let on = (k as f32 + row as f32 * 0.7) / n as f32 <= sk;
+                if on && wd + wt > 0.2 {
+                    g.rect(xx + pw * 0.12, yy + ph * 0.06, pw * 0.76, ph * 0.12, mix(GLASS, WHITE, 0.4), 0.35 * sk * (wd + wt * 0.5));
+                }
+            }
+        }
+        if let Some(sv_) = solar {
+            label(labels, fx0 + w * 0.065, fy0 + h * 0.085, h * 0.0095, ink, 0.7 * quiet, format!("solar {:.1} kW", sv_ / 1000.0), false);
+        }
+        hits.push(Hit { x: fx0 + w * 0.07, y: fy0 + h * 0.03, r: h * 0.05, text: match solar { Some(v) => format!("the solar farm · your roof makes {:.1} kW now", v / 1000.0), None => "the solar farm · it follows the Sun".into() } });
+
+        // the greenhouses: what you grew with Pulse (its garden): a plant for every day, taller with your streak.
+        // At night the grow lights come on, pink, as they really are
+        let grown = num(sv, &["growth", "n"]).unwrap_or(0.0) as usize;
+        let streak = num(sv, &["growth", "streak"]).unwrap_or(0.0) as f32;
+        let (gx0, gy) = (cx + w * 0.10, hz + h * 0.155);
+        let gr = w * 0.028;
+        let mut planted = 0usize;
+        for k in 0..3 {
+            let gx = gx0 + k as f32 * gr * 2.35;
+            g.arcf(gx, gy, gr, gr * 0.62, 0.0, PI, TAU, lit(c8(60, 70, 64), 0.9), 0.9);
+            let night = (1.0 - wd).max(0.0);
+            if night > 0.2 {
+                g.arcf(gx, gy, gr * 0.92, gr * 0.55, 0.0, PI, TAU, c8(255, 90, 200), 0.30 * night);
+                g.glow(gx, gy - gr * 0.25, gr * 1.6, c8(255, 110, 210), 0.18 * night * quiet);
+            }
+            for p in 0..10 {
+                if planted >= grown {
+                    break;
+                }
+                planted += 1;
+                let px = gx - gr * 0.75 + p as f32 * gr * 0.166;
+                let edge = (1.0 - ((px - gx) / gr).powi(2)).max(0.0).sqrt() * gr * 0.62;
+                let ph = (edge * (0.35 + 0.55 * cl(streak / 14.0))) * (0.75 + 0.25 * ((p * 7 + k * 3) % 5) as f32 / 4.0);
+                let sway = if still { 0.0 } else { (tt * 0.9 + p as f32).sin() * u * 0.6 };
+                let leaf = lit(mix(LEAF, OK, 0.25), 1.15);
+                g.line(&[(px, gy), (px + sway, gy - ph)], (u * 1.1).max(1.0), lit(mix(LEAF, DEEP, 0.3), 1.0), 0.95);
+                for (k2, side) in [(0.35f32, -1.0f32), (0.6, 1.0), (0.8, -1.0)] {
+                    let (lx, ly) = (px + sway * k2, gy - ph * k2);
+                    g.arcf(lx + side * u * 2.2, ly, (u * 2.4).max(1.5), (u * 1.0).max(0.8), side * -0.5, 0.0, TAU, leaf, 0.95);
+                }
+                g.disc(px + sway, gy - ph, (u * 2.0).max(1.4), leaf, 0.95);
+                if streak >= 7.0 && (p + k) % 3 == 0 {
+                    g.disc(px + sway + u * 1.2, gy - ph * 0.7, (u * 1.1).max(1.0), lit(c8(230, 70, 50), 1.1), 0.95); // ripe
+                }
+            }
+            g.arcf(gx, gy, gr, gr * 0.62, 0.0, PI, TAU, GLASS, 0.18);
+            g.arc(gx, gy, gr, gr * 0.62, PI, TAU, (u * 1.0).max(1.0), mix(GLASS, WHITE, 0.3), 0.6);
+            g.rect(gx - gr, gy, gr * 2.0, (u * 1.5).max(1.0), STEEL, 0.9);
+        }
+        if grown > 0 {
+            label(labels, gx0 + gr * 2.35, gy + h * 0.016, h * 0.0095, ink, 0.7 * quiet, format!("{grown} grown · streak {}", streak as i64), false);
+        }
+        hits.push(Hit { x: gx0 + gr * 2.35, y: gy - gr * 0.3, r: gr * 3.0, text: format!("the greenhouses · {grown} days grown with Pulse, a streak of {}", streak as i64) });
+
+        // the colonists: you and your friends (Pulse's friends), in suits, walking between the dome and the
+        // greenhouses. You stay inside while you are away or in a meeting
+        let away = get(sv, &["away"]).as_bool().unwrap_or(false) || get(sv, &["meeting"]).as_bool().unwrap_or(false);
+        let friends = list(sv, &["friends"]);
+        let mut crew: Vec<(String, String)> = Vec::new();
+        if !away {
+            crew.push(("you".into(), "you, out for a walk".into()));
+        }
+        for f in friends.iter().take(5) {
+            let n = text(f, &["name"]);
+            crew.push((n.clone(), format!("{} · {} commits this week", if n.is_empty() { "a friend".into() } else { n }, num(f, &["week"]).unwrap_or(0.0) as i64)));
+        }
+        for (k, (name, what)) in crew.iter().enumerate() {
+            let sp = 0.018 + k as f32 * 0.004;
+            let ph = if still { k as f32 * 0.21 } else { (tt * sp + k as f32 * 0.37).fract() };
+            let back = ph > 0.5;
+            let along = if back { 2.0 - ph * 2.0 } else { ph * 2.0 };
+            let x = cx + w * 0.045 + along * w * 0.05 + k as f32 * w * 0.004;
+            let y = hz + h * (0.118 + (k % 3) as f32 * 0.008);
+            let s = h * 0.0085;
+            let step = if still { 0.0 } else { (tt * 6.0 + k as f32).sin() };
+            let suit = lit(c8(236, 232, 224), 1.0);
+            g.line(&[(x, y - s * 0.9), (x - s * 0.35 + step * s * 0.3, y)], (s * 0.32).max(1.0), suit, 1.0);
+            g.line(&[(x, y - s * 0.9), (x + s * 0.35 - step * s * 0.3, y)], (s * 0.32).max(1.0), suit, 1.0);
+            g.rect(x - s * 0.32, y - s * 2.0, s * 0.64, s * 1.15, suit, 1.0);
+            g.rect(if back { x + s * 0.3 } else { x - s * 0.62 }, y - s * 1.9, s * 0.32, s * 0.8, lit(STEEL, 1.0), 1.0); // the life support pack
+            g.disc(x, y - s * 2.35, s * 0.42, suit, 1.0);
+            g.disc(if back { x - s * 0.12 } else { x + s * 0.12 }, y - s * 2.35, s * 0.26, mix(c8(255, 196, 90), GLASS, wn), 0.95); // the visor
+            if k > 0 && !name.is_empty() {
+                label(labels, x, y + h * 0.012, h * 0.008, ink, 0.55 * quiet, name.clone(), false);
+            }
+            hits.push(Hit { x, y: y - s, r: s * 2.5, text: what.clone() });
+        }
+
+        // the supply pods: your pending updates (Pulse's updates). When new ones come, a pod comes down on its
+        // parachutes; its crates stay on the ground until you update (a red one for a new kernel)
+        let ups = num(sv, &["updates", "n"]).unwrap_or(0.0) as i64;
+        let kernel = get(sv, &["updates", "kernel"]).as_bool().unwrap_or(false);
+        if ups != mem.supply.0 {
+            mem.supply = (ups, if mem.supply.0 >= 0 && ups > mem.supply.0 { t } else { -100.0 });
+        }
+        if ups > 0 {
+            let (px, py) = (cx - w * 0.035, hz + h * 0.20);
+            let fall = ((t - mem.supply.1) as f32 / 9.0).clamp(0.0, 1.0);
+            let s = h * 0.012;
+            let crates = ups.clamp(1, 9) as usize;
+            if fall >= 1.0 {
+                for k in 0..crates {
+                    let (cxk, cyk) = (px + ((k % 4) as f32 - 1.5) * s * 1.15 + (k / 4) as f32 * s * 0.55, py - (k / 4) as f32 * s);
+                    let red = kernel && k == 0;
+                    g.rect(cxk - s * 0.5, cyk - s, s, s, lit(if red { c8(200, 70, 60) } else { c8(196, 170, 120) }, 0.95), 1.0);
+                    g.rect(cxk - s * 0.5, cyk - s * 0.55, s, (u * 0.8).max(1.0), DEEP, 0.6);
+                }
+            }
+            // the capsule: coming down, then standing beside its crates
+            let cyp = if fall < 1.0 { -h * 0.05 + (py - s * 0.2 + h * 0.05) * (1.0 - (1.0 - fall).powi(2)) } else { py };
+            let cxp = px + s * 3.4;
+            g.poly(&[(cxp - s * 0.9, cyp), (cxp + s * 0.9, cyp), (cxp + s * 0.45, cyp - s * 1.5), (cxp - s * 0.45, cyp - s * 1.5)], lit(c8(230, 226, 220), 0.95), 1.0);
+            g.rect(cxp - s * 0.9, cyp - s * 0.2, s * 1.8, s * 0.2, lit(DEEP, 1.0), 1.0);
+            if fall < 1.0 {
+                let ch = s * 5.0;
+                for side in [-1.0f32, 1.0] {
+                    g.arcf(cxp + side * s * 1.2, cyp - ch, s * 1.3, s * 0.7, 0.0, PI, TAU, if side < 0.0 { c8(240, 120, 60) } else { WHITE }, 0.95);
+                    g.line(&[(cxp + side * s * 0.4, cyp - s * 1.5), (cxp + side * s * 1.2, cyp - ch)], (u * 0.6).max(1.0), WHITE, 0.6);
+                }
+                g.glow(cxp, cyp, s * 2.0, c8(255, 200, 140), 0.4 * (1.0 - fall));
+            }
+            label(labels, px + s, py + h * 0.016, h * 0.0095, ink, 0.75 * quiet, format!("{ups} updates{}", if kernel { " · new kernel" } else { "" }), false);
+            hits.push(Hit { x: px + s, y: py - s, r: s * 4.0, text: format!("supplies · {ups} updates waiting{}", if kernel { ", a new kernel among them" } else { "" }) });
+        }
+    }
+
+    // ---- pulse-native: the scout, a little helicopter like Ingenuity. By day it flies a sortie every few minutes
+    // from its pad beside the dome: it lifts off in a puff of dust, crosses the plain low, looks around and comes back
+    if wd + wt > 0.3 && !still {
+        let cyc = (tt / 150.0).rem_euclid(1.0);
+        if cyc < 0.42 {
+            let k = cyc / 0.42;
+            let pad = (cx + w * 0.17, hz + h * 0.10);
+            let up = cl(k / 0.12).min(cl((1.0 - k) / 0.12)); // lift-off and landing
+            let ease = |v: f32| v * v * (3.0 - 2.0 * v);
+            let out = if k < 0.5 { ease(cl((k - 0.1) / 0.35)) } else { ease(cl((0.9 - k) / 0.35)) };
+            let x = pad.0 - out * w * 0.34 + (tt * 0.7).sin() * u * 3.0 * up;
+            let y = pad.1 - up * h * (0.11 + 0.02 * (tt * 0.5).sin());
+            let s = h * 0.011;
+            let lean = if k < 0.5 { -0.12 } else { 0.12 } * up * (1.0 - (out - 0.5).abs() * 2.0).max(0.0);
+            // its shadow on the ground, smaller and fainter as it climbs
+            g.ell(x, pad.1 + s * 0.6, s * (1.6 - up * 0.6), s * 0.35, c8(40, 22, 14), 0.35 * (1.0 - up * 0.6));
+            if up < 0.5 {
+                // the dust the rotors throw up near the ground
+                g.glow(x, pad.1, s * (5.0 + 6.0 * up), c8(214, 150, 104), 0.35 * (1.0 - up * 2.0));
+            }
+            // the legs, the body, the solar panel and the two rotors spinning the opposite way (a blur)
+            for lx in [-1.0f32, 1.0] {
+                g.line(&[(x + lx * s * 0.4, y + s * 0.3), (x + lx * s * 1.1, y + s * 1.2)], (u * 0.8).max(1.0), ink, 0.9);
+            }
+            g.rect(x - s * 0.45, y - s * 0.1, s * 0.9, s * 0.65, mix(ink, c8(200, 190, 175), 0.3), 1.0);
+            g.rect(x - s * 0.08, y - s * 1.3, s * 0.16, s * 1.2, ink, 1.0);
+            g.rect(x - s * 0.6, y - s * 1.45, s * 1.2, s * 0.14, c8(70, 90, 140), 0.95);
+            for (dy, ph) in [(-0.95f32, 1.0f32), (-0.55, -1.0)] {
+                let spin = (tt * 31.0 * ph).sin();
+                g.arcf(x, y + s * dy, s * 2.6, s * 0.12, lean, 0.0, TAU, c8(60, 52, 48), 0.30 + 0.12 * spin.abs());
+                let bx = s * 2.6 * spin;
+                g.line(&[(x - bx, y + s * dy), (x + bx, y + s * dy)], (u * 0.9).max(1.0), c8(40, 34, 32), 0.75);
+            }
+            if (tt * 1.5).fract() < 0.12 {
+                g.glow(x, y + s * 0.4, s * 1.2, c8(255, 80, 60), 0.9);
+            }
+            hits.push(Hit { x, y, r: s * 3.0, text: "the scout · a helicopter in an air a hundred times thinner".into() });
+        }
     }
 
     // ---- your weather, as Mars would have it: rain is a dust storm, snow is frost falling

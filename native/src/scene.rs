@@ -84,6 +84,8 @@ pub struct World {
     pub git_fail: std::collections::HashMap<String, f32>,
     /// where each repo's roof is (pulse.js gitPos): a push bursts there
     pub git_pos: Vec<(String, f32, f32)>,
+    /// scene = "noir": what it keeps between frames
+    pub noir: crate::modes::Noir,
     /// your heartbeats on the line of the horizon: when each one started
     pub beats: Vec<f64>,
     /// how tall each core's tower is now (it follows the load smoothly)
@@ -179,7 +181,7 @@ impl World {
                 x += w + r.next() * 0.004;
             }
         }
-        World { city, last_t: 0.0, rockets: Default::default(), bursts: Vec::new(), say: None, seed: 42, rings: Vec::new(), more: Default::default(), code: Default::default(), labels: Vec::new(), hits: Vec::new(), centre: None, pointer: None, wall: false, has_cam: false, simple: false, last: None, beats: Vec::new(), heights: Vec::new(), audio: Vec::new(), tz: 0, prog: "face", alert_at: -1e9, view: None, sounds: Vec::new(), back: Default::default(), back_img: None, ball: Default::default(), ball_img: None, ball_at: -1e9, gaze: (0.0, 0.0), hm: String::new(), date_short: String::new(), typing: false, woke_at: -1e9, car_at: -1e9, cam: None, door: None, alert_env: 0.0, desk_empty: true, sky: Default::default(), floor: Default::default(), drones: Default::default(), focus_k: 0.0, band: (0.0, 0.0), heavens: Default::default(), street: Default::default(), overhead: Default::default(), pushed: Vec::new(), lively: true, motes: Vec::new(), weather: Default::default(), primary: true, git_flash: Default::default(), git_fail: Default::default(), git_pos: Vec::new() }
+        World { city, last_t: 0.0, rockets: Default::default(), bursts: Vec::new(), say: None, seed: 42, rings: Vec::new(), more: Default::default(), code: Default::default(), labels: Vec::new(), hits: Vec::new(), centre: None, pointer: None, wall: false, has_cam: false, simple: false, last: None, beats: Vec::new(), heights: Vec::new(), audio: Vec::new(), tz: 0, prog: "face", alert_at: -1e9, view: None, sounds: Vec::new(), back: Default::default(), back_img: None, ball: Default::default(), ball_img: None, ball_at: -1e9, gaze: (0.0, 0.0), hm: String::new(), date_short: String::new(), typing: false, woke_at: -1e9, car_at: -1e9, cam: None, door: None, alert_env: 0.0, desk_empty: true, sky: Default::default(), floor: Default::default(), drones: Default::default(), focus_k: 0.0, band: (0.0, 0.0), heavens: Default::default(), street: Default::default(), overhead: Default::default(), pushed: Vec::new(), lively: true, motes: Vec::new(), weather: Default::default(), primary: true, git_flash: Default::default(), git_fail: Default::default(), git_pos: Vec::new(), noir: Default::default() }
     }
 }
 
@@ -333,7 +335,7 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
     let (mars, monolith, pond) = (kind == "mars", kind == "monolith", kind == "pond");
     let wall = world.wall;
     let simple = world.simple;
-    let bare = bare || orbit || noir || mars || monolith || pond || wall; // no near towers, no dome, no city life: the scene draws its own centre
+    let bare = bare || orbit || mars || monolith || pond || wall; // (noir keeps pulse.js's git, cars, robots: its own centre is the board) // no near towers, no dome, no city life: the scene draws its own centre
     let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
     let (ox, oy) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
     let (qx, qy) = crate::extra::shake(&mut world.more, t, h); // an earthquake shakes the whole picture
@@ -355,7 +357,7 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
     let wind = num(st, &["weather", "wind"]).unwrap_or(0.0) as f32;
     let wind_dir = num(st, &["weather", "windDir"]).unwrap_or(270.0) as f32;
 
-    let mut marks = Vec::new();
+    let marks = Vec::new();
     // ---- the sky: pulse.js's own three skies (night, twilight, day: PN, PT, PD), mixed by the Sun's real height
     let (bg, a2) = (pal.bg, pal.accent2);
     let black = [0.0, 0.0, 0.0];
@@ -367,9 +369,9 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
     let over = cloud * 0.35; // an overcast sky is greyer
     let (top, midc, low) = (mix(mx(0), grey, over * 0.6), mix(mx(1), grey, over), mix(mx(2), grey, over * 0.8));
     // what never moves comes from one picture, painted as pulse.js paints it and only when something changes
-    let use_back = !wall && !noir && !mars && !pond && kind != "city";
+    let use_back = !wall && !mars && !pond && kind != "city"; // (noir too: its megacity is in the picture)
     if use_back {
-        let sf = win.scale_factor().clamp(1.0, 2.0);
+        let sf = win.scale_factor().clamp(1.0, 3.0); // the screen's own pixels, also at a scale over 2
         let rem = crate::ui::rem(w, h);
         let edge = (27.2 * rem + 30.0) * sf;
         let band = if (w * sf - 2.0 * edge) > w * sf * 0.25 { (edge, w * sf - edge) } else { (w * sf * 0.08, w * sf * 0.92) };
@@ -398,9 +400,6 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
         gradient(win, ox, oy + hz * 0.7, w, hz * 0.3 + 1.0, midc, 1.0, low, 1.0);
     }
 
-    if noir {
-        crate::modes::noir_sky(win, &crate::life::Frame { w, h, ox, oy, hz, u, t: tf, sky: [wn, wt, wd] });
-    }
     lap.mark("backdrop");
     // ---- pulse.js draw(): the faint stars, the real Sun (the rays and the real stars and the Moon follow)
     let sky_on = !wall;
@@ -486,7 +485,7 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
     // ---- the near city: a tower for each CPU core either side of the centre
     let cpu = (num(st, &["sys", "cpu"]).unwrap_or(0.0) as f32 / 100.0).clamp(0.0, 1.0);
     let hide = get(st, &["privacy"]).as_bool().unwrap_or(false) || get(st, &["screencast"]).as_bool().unwrap_or(false);
-    let real_city = !hide && crate::cities_data::city(&crate::hub::text(st, &["ui", "skyline"])).is_some();
+    let real_city = !hide && crate::cities::city(&crate::hub::text(st, &["ui", "skyline"])).is_some();
     let r_core = h * if orbit { 0.15 } else if sphere { 0.165 } else { 0.135 };
     if !bare && !orbit {
         // pulse.js drawGit(): your repos beside the core (not in calm), then the towers of the cores in front of them
@@ -503,7 +502,7 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
     }
     lap.mark("git-towers");
     let (mut rr, mut dcx, mut dcy) = (0.0f32, ox + w / 2.0, oy + hz);
-    if !bare {
+    if !bare && !noir {
         // ---- the centre: the dome of the skyline, or the whole sphere of Pulse turning over the horizon
         // pulse.js: R = H * (sphere ? .165 : .135), the sphere sits just over the horizon (cy = hz - R * .97)
         rr = if sphere { h * 0.165 } else { h * 0.135 };
@@ -541,14 +540,14 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
                 wind_k: (if get(st, &["weather", "windUnit"]).as_str() == Some("mph") { 1.609 } else { 1.0 } * (num(st, &["weather", "wind"]).unwrap_or(0.0) as f32).max(num(st, &["weather", "gust"]).unwrap_or(0.0) as f32 * 0.8) / 60.0).min(1.0),
                 cam: cam.as_ref().map(|c| (c.0.as_str(), c.1.as_slice())), door: door.as_ref().map(|c| (c.0.as_str(), c.1.as_slice())),
             };
-            // the sphere's picture is made in the screen's own pixels (a HiDPI screen gets twice as many), at most 2x as the web page
-            let px_d = ((rr * win.scale_factor().clamp(1.0, 2.0) * 2.0).round() as usize).max(16);
+            // the sphere's picture is made in the screen's own pixels (a HiDPI screen gets two or three times as many)
+            let px_d = ((rr * win.scale_factor().clamp(1.0, 3.0) * 2.0).round() as usize).max(16);
             // a new picture every frame: the LEDs move as smoothly as the rest (a picture every other frame made them
             // step out of time with the scene)
             let fresh = world.ball_img.is_none() || world.ball.d != px_d || t != world.ball_at;
             if fresh {
                 world.ball_at = t;
-                crate::perf::time("sphere", || world.ball.frame(&feed, rr * win.scale_factor().clamp(1.0, 2.0)));
+                crate::perf::time("sphere", || world.ball.frame(&feed, rr * win.scale_factor().clamp(1.0, 3.0)));
             }
             world.prog = world.ball.prog;
             let avg = { let a = world.ball.avg; [a[0] / 255.0, a[1] / 255.0, a[2] / 255.0] };
@@ -660,11 +659,11 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
             crate::floor::car(win, cx, font, st, pal, ox, oy, h, tf, world.band, (t - world.car_at) as f32, kind);
             lap.mark("fs-car");
         }
-        if !simple && !calm && !orbit && !noir {
-            // pulse.js: the datacenter, the trains, the robots, the candles
+        if !simple && !calm && !orbit {
+            // pulse.js: the datacenter (not in noir), the trains, the robots, the candles
             let share = get(st, &["privacy"]).as_bool().unwrap_or(false) || get(st, &["screencast"]).as_bool().unwrap_or(false);
             let band = world.band;
-            world.street.datacenter(win, cx, font, st, pal, ox, oy, w, h, tf, t, band, wn.max(wt), still_l);
+            if !noir { world.street.datacenter(win, cx, font, st, pal, ox, oy, w, h, tf, t, band, wn.max(wt), still_l); }
             lap.mark("fs-dc");
             for (x, y, words) in std::mem::take(&mut world.street.zaps) {
                 crate::extra::event(&mut world.more, "lightning", &serde_json::json!({ "x": x - ox, "y": y - oy }), t, world.last.as_ref());
@@ -694,9 +693,6 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
     }
     if hacker {
         crate::core::radar(win, cx, font, st, pal, ox, oy, w, h, tf, still_l, hide);
-    }
-    if noir {
-        crate::modes::noir_city(win, st, pal, &frame, &mut marks);
     }
     lap.mark("floor-street");
     // the line of the horizon: the machine's pulse, livelier with the CPU (noir has its street instead)
@@ -762,11 +758,31 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
     let share_l = get(st, &["privacy"]).as_bool().unwrap_or(false) || get(st, &["screencast"]).as_bool().unwrap_or(false);
     world.rockets.paint(win, cx, font, pal, ox, oy, w, h, tf, world.band, [wn, wt, wd], still_l, share_l);
 
+    if noir && !wall {
+        // pulse.js drawNoirCity(): the megacity's lights, its big screen, its signs, the cars in the air, the rain
+        let sf = win.scale_factor().clamp(1.0, 3.0);
+        let fresh_board = if world.noir.board.is_none() || t != world.ball_at {
+            world.ball_at = t;
+            let (cam, door) = (world.cam.clone(), world.door.clone());
+            let (hm, date, audio) = (world.hm.clone(), world.date_short.clone(), world.audio.clone());
+            let feed = crate::sphere::Feed {
+                st, pal, t, hm: &hm, date: &date, gaze: world.gaze, watching: false, woke: t - world.woke_at, typing: world.typing, alert_env: world.alert_env,
+                audio: &audio, bass: 0.0, car_age: t - world.car_at, wind_k: 0.0,
+                cam: cam.as_ref().map(|c| (c.0.as_str(), c.1.as_slice())), door: door.as_ref().map(|c| (c.0.as_str(), c.1.as_slice())),
+            };
+            Some(world.ball.board(&feed))
+        } else {
+            None
+        };
+        world.prog = world.ball.prog;
+        crate::modes::noir_city(win, cx, font, pal, &frame, &world.back, sf, fresh_board, &mut world.noir, still_l, dt * 20.0);
+    }
     lap.mark("iss-fw-rocket");
-    // ---- pulse.js drawPlanes(): the planes really over you, gliding where they are going, each with its tag
+    // ---- pulse.js drawPlanes(): the planes really over you, gliding where they are going, each with its tag (not on
+    // Mars: its own sky covers them, and orbiters and the scout fly there instead)
     if !simple {
         let frames = dt * 20.0;
-        world.sky.planes(win, cx, font, st, pal, ox, oy, w, h, tf, frames, ui_boxes, polish);
+        if !mars { world.sky.planes(win, cx, font, st, pal, ox, oy, w, h, tf, frames, ui_boxes, polish); }
         // drawBanners(), drawBalloons()
         let (primary, desk) = (world.primary, world.desk_empty);
         world.street.banners(win, cx, font, st, pal, ox, oy, w, h, t, primary, desk);
@@ -791,6 +807,12 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
         if let Some((_, sv)) = &view {
             if mars {
                 crate::worlds::mars(win, sv, &frame, &mut world.code, t, &mut world.labels, &mut world.hits);
+                if !simple {
+                    // pulse-native: the flights over you, flying over Mars as saucers (same tags)
+                    world.sky.ufo = true;
+                    world.sky.planes(win, cx, font, st, pal, ox, oy, w, h, tf, dt * 20.0, ui_boxes, polish);
+                    world.sky.ufo = false;
+                }
             } else if pond {
                 crate::worlds::pond(win, sv, pal, &frame, &mut world.code, t, &mut world.hits);
             } else {

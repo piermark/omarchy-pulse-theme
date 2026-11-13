@@ -69,6 +69,19 @@ pub fn poly(win: &mut Window, pts: &[(f32, f32)], c: C, a: f32) {
     }
 }
 
+/// A shape filled with a gradient from `c0` to `c1` along `angle` (degrees, as CSS: 0 up, 90 to the right) across
+/// its bounds.
+pub fn poly_grad(win: &mut Window, pts: &[(f32, f32)], angle: f32, c0: C, a0: f32, c1: C, a1: f32) {
+    if pts.len() < 3 || (a0 <= 0.004 && a1 <= 0.004) {
+        return;
+    }
+    let path = if convex(pts) { fan(pts) } else { lyon_fill(pts) };
+    if let Some(path) = path {
+        PATHS.with(|n| n.set(n.get() + 1));
+        win.paint_path(path, gpui::linear_gradient(angle, gpui::linear_color_stop(col(c0, a0), 0.0), gpui::linear_color_stop(col(c1, a1), 1.0)));
+    }
+}
+
 /// The triangles go to the GPU in one shape. (PULSE_NOPATH and PULSE_NOPATH_SEC leave them out, to measure.)
 fn emit(win: &mut Window, path: gpui::Path<gpui::Pixels>, c: C, a: f32) {
     PATHS.with(|n| n.set(n.get() + 1));

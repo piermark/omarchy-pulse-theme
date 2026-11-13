@@ -2,6 +2,7 @@
 //! the planes that are really over you (drawPlanes), each where it is in your sky, moving as it moves, with a tag
 //! you can read: the flight, its aircraft, its route, how high, how fast and where it is heading.
 
+use std::f32::consts::{PI, TAU};
 use crate::backdrop::{mix as mixi, Rnd};
 use crate::draw;
 use crate::hub::{get, list, num, text};
@@ -31,11 +32,19 @@ pub struct Sky {
     planes: HashMap<String, (f32, f32, Vec<(f32, f32)>)>,
     /// each plane by its id: the last position the hub gave (azimuth, elevation) and when it came
     fixes: HashMap<String, (f32, f32, f32)>,
+    /// pulse-native: on Mars the flights are drawn as flying saucers (the same flights, the same tags)
+    pub ufo: bool,
 }
 
 /// pulse.js darkness(): how dark the sky is (0 by day, 1 at night), how much of it the clouds leave, the cloud cover.
 pub fn darkness(st: &Value) -> (f32, f32, f32) {
-    let se = num(st, &["night", "sun", "el"]).map(|v| v as f32).unwrap_or(-20.0);
+    // without the real Sun (no location for the night sky), as pulse.js: day or night from the weather's sunrise
+    // and sunset (night only when the hub says so; 0.16 took night whenever the Sun was missing)
+    let se = num(st, &["night", "sun", "el"]).map(|v| v as f32).unwrap_or_else(|| match num(st, &["weather", "day"]) {
+        Some(d) if d > 0.0 => 20.0,
+        Some(_) => -20.0,
+        None => 20.0,
+    });
     let mut d = if se > 0.0 { 0.0 } else if se > -6.0 { 0.25 * (-se / 6.0) } else if se > -12.0 { 0.25 + 0.75 * ((-se - 6.0) / 6.0) } else { 1.0 };
     let ec = get(st, &["season", "eclipse"]);
     if text(ec, &["kind"]) == "solar" && se > -1.0 {
@@ -261,8 +270,15 @@ impl Sky {
                 }
             }
             let n = q.2.len();
+            if self.ufo {
+                // a saucer leaves no contrail: a faint shimmer behind it instead
+                for k in (1..n).step_by(4).rev().take(8) {
+                    let kf = k as f32 / n as f32;
+                    draw::hot(win, ox + q.2[k].0, oy + q.2[k].1, s2 * (0.6 + kf), [0.55, 1.0, 0.85], 0.10 * kf);
+                }
+            }
             // in seven pieces, each one shape (pulse.js strokes 70: as wide and as bright, fading behind)
-            for bin in 0..7 {
+            for bin in 0..if self.ufo { 0 } else { 7 } {
                 let (k0, k1) = ((bin * n / 7).max(1), ((bin + 1) * n / 7).min(n));
                 if k1 <= k0 {
                     continue;
@@ -278,8 +294,33 @@ impl Sky {
                     dir = if mdx > 0.0 { 1.0 } else { -1.0 };
                 }
             }
-            // the plane seen from below: fuselage, swept wings, tail, the nose where it goes
             let (fx, fy, sx) = (ox + q.0, oy + q.1, dir);
+            if self.ufo {
+                // pulse-native: a flying saucer, seen a little from below: it wobbles, its rim lights run round
+                let wob = (t * 1.7 + i as f32).sin();
+                let (fy, r) = (fy + wob * s2 * 0.5, s2 * 2.4);
+                let tilt = wob * 0.08 + sx * 0.06;
+                draw::hot(win, fx, fy, r * 1.6, [0.45, 1.0, 0.8], 0.18);
+                draw::arc_fill(win, fx, fy - r * 0.18, r * 0.42, r * 0.36, tilt, PI, TAU, [0.55, 0.95, 1.0], 0.75); // the glass dome
+                draw::arc_fill(win, fx - r * 0.12, fy - r * 0.32, r * 0.12, r * 0.07, tilt, 0.0, TAU, [1.0, 1.0, 1.0], 0.5);
+                draw::arc_fill(win, fx, fy, r, r * 0.26, tilt, 0.0, TAU, [0.62, 0.66, 0.72], 0.97); // the hull
+                draw::arc_fill(win, fx, fy - r * 0.05, r * 0.9, r * 0.12, tilt, PI, TAU, [0.86, 0.9, 0.95], 0.6); // its shine
+                draw::arc_fill(win, fx, fy + r * 0.12, r * 0.55, r * 0.13, tilt, 0.0, PI, [0.25, 0.27, 0.32], 0.95); // the belly
+                for k in 0..7 {
+                    let a = k as f32 / 7.0 * TAU + t * 2.4;
+                    if a.sin() < -0.2 {
+                        continue; // behind the hull
+                    }
+                    let (lx, ly) = (fx + a.cos() * r * 0.82, fy + a.sin() * r * 0.17 + a.cos() * tilt * r);
+                    let c = [[1.0, 0.35, 0.35], [0.4, 1.0, 0.6], [0.4, 0.75, 1.0], [1.0, 0.85, 0.3]][(k + (t * 3.0) as usize) % 4];
+                    draw::hot(win, lx, ly, s2 * 0.9, c, 0.95);
+                }
+                if (t * 0.21 + i as f32 * 0.37).rem_euclid(1.0) < 0.12 {
+                    // now and then a beam down to the sand
+                    draw::poly(win, &[(fx - r * 0.3, fy + r * 0.2), (fx + r * 0.3, fy + r * 0.2), (fx + r * 0.9, fy + r * 4.5), (fx - r * 0.9, fy + r * 4.5)], [0.55, 1.0, 0.85], 0.12);
+                }
+            } else {
+            // the plane seen from below: fuselage, swept wings, tail, the nose where it goes
             let body = mix(pal.fg, pal.bg, 0.25);
             draw::poly(win, &[(fx + sx * s2 * 2.6, fy), (fx - sx * s2 * 2.2, fy - s2 * 0.28), (fx - sx * s2 * 2.2, fy + s2 * 0.28)], body, 0.95);
             draw::poly(win, &[(fx + sx * s2 * 0.5, fy), (fx - sx * s2 * 0.6, fy - s2 * 2.0), (fx - sx * s2 * 0.2, fy), (fx - sx * s2 * 0.6, fy + s2 * 2.0)], body, 0.95);
@@ -291,6 +332,7 @@ impl Sky {
             }
             if (t + i as f32 * 0.37).rem_euclid(1.2) < 0.08 {
                 draw::hot(win, fx, fy, s2 * 2.6, pal.fg, 0.9); // the white strobe, a short flash
+            }
             }
             let flight = text(p, &["flight"]);
             if share || flight.is_empty() {

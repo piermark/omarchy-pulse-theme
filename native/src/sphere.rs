@@ -778,6 +778,56 @@ impl Sphere {
 
     /// pulse.js drawSphere(), up to the picture of the sphere itself (`out`, D×D, BGRA) and the colour on screen.
     /// Returns the turn of the sphere (for whoever draws around it).
+    /// pulse.js drawNoirCity(): the big screen of the noir scene shows the sphere's texture as seen from the front
+    /// (its middle three fifths) as a giant LED billboard: BGRA, straight alpha, and its size.
+    pub fn board(&mut self, f: &Feed) -> (Vec<u8>, u32, u32) {
+        self.prog = self.program(f);
+        self.paint_tex(self.prog, f, TW / 2.0, false);
+        let (tw, th) = (self.tex.width() as usize, self.tex.height() as usize);
+        let x0 = ((TW / 2.0 - TW * 0.3) * TX) as usize;
+        let cw = ((TW * 0.6 * TX) as usize).min(tw - x0);
+        let data = self.tex.data();
+        // pulse-native: a giant LED billboard, as over a Tokyo crossing: every LED a round dot of light (one for
+        // two texels), brighter in the middle, a dark gap between them; the colours pushed a little, as LEDs are
+        let (lc, lr, cell) = (cw / 2, th / 2, 5usize);
+        let (iw, ih) = (lc * cell, lr * cell);
+        let mut out = vec![0u8; iw * ih * 4];
+        let dot: Vec<f32> = (0..cell * cell)
+            .map(|k| {
+                let (dx, dy) = ((k % cell) as f32 + 0.5 - cell as f32 / 2.0, (k / cell) as f32 + 0.5 - cell as f32 / 2.0);
+                let d = (dx * dx + dy * dy).sqrt() / (cell as f32 * 0.5);
+                (1.15 - d * d * 0.95).clamp(0.08, 1.0)
+            })
+            .collect();
+        for r in 0..lr {
+            for c in 0..lc {
+                // the LED's colour: the two-by-two texels it stands for
+                let mut acc = [0f32; 4];
+                for (dy, dx) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
+                    let i = ((r * 2 + dy) * tw + x0 + c * 2 + dx) * 4;
+                    for ch in 0..4 {
+                        acc[ch] += data[i + ch] as f32 / 4.0;
+                    }
+                }
+                let a = acc[3].max(1.0);
+                let (rr, gg, bb) = (acc[0] * 255.0 / a, acc[1] * 255.0 / a, acc[2] * 255.0 / a);
+                let lum = (rr + gg + bb) / 3.0;
+                let sat = |v: f32| (lum + (v - lum) * 1.25).clamp(0.0, 255.0) * 1.12;
+                let (rr, gg, bb) = (sat(rr), sat(gg), sat(bb));
+                for k in 0..cell * cell {
+                    let (px, py) = (c * cell + k % cell, r * cell + k / cell);
+                    let o = (py * iw + px) * 4;
+                    let m = dot[k];
+                    out[o] = (bb * m).min(255.0) as u8;
+                    out[o + 1] = (gg * m).min(255.0) as u8;
+                    out[o + 2] = (rr * m).min(255.0) as u8;
+                    out[o + 3] = (acc[3].max(200.0)) as u8;
+                }
+            }
+        }
+        (out, iw as u32, ih as u32)
+    }
+
     pub fn frame(&mut self, f: &Feed, radius: f32) -> f32 {
         let d = ((radius * 2.0).round() as usize).max(16);
         if self.map.as_ref().map(|m| m.d != d).unwrap_or(true) {
