@@ -8131,16 +8131,25 @@ HOOK_EVENTS = {
 HOOK_AGENTS = ("claude", "codex", "grok", "hermes", "gemini", "copilot", "opencode", "pi")
 
 
-def agent_group(cwd: str) -> str:
-    """Agents working in the same repo (or folder) share a group: a short hash, never the path."""
-    top = cwd
+def agent_top(cwd: str) -> str:
+    """The repo (or worktree) an agent works in, or its folder outside git."""
     try:
         r = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=1)
         if r.returncode == 0 and r.stdout.strip():
-            top = r.stdout.strip()
+            return r.stdout.strip()
     except (OSError, subprocess.SubprocessError):
         pass
-    return hashlib.sha1(os.path.realpath(top).encode()).hexdigest()[:8]
+    return cwd
+
+
+def agent_group(cwd: str, top: str = "") -> str:
+    """Agents working in the same repo (or folder) share a group: a short hash, never the path."""
+    return hashlib.sha1(os.path.realpath(top or agent_top(cwd)).encode()).hexdigest()[:8]
+
+
+def agent_name(kind: str, top: str) -> str:
+    """One drone per agent and repo: named by the repo, so a `cd` into a subfolder does not start another drone."""
+    return f"{kind} · {Path(top).name}"[:32]
 
 
 def agent_hook(kind: str, args: list) -> None:
@@ -8153,8 +8162,9 @@ def agent_hook(kind: str, args: list) -> None:
         data = json.loads(args[-1])
         if data.get("type") == "agent-turn-complete":
             cwd = data.get("cwd") or os.getcwd()
-            quiet_client("/api/agent/" + urllib.parse.quote(f"codex · {Path(cwd).name}"[:32]) + "?" +
-                         urllib.parse.urlencode({"state": "done", "text": "turn complete", "group": agent_group(cwd)}))
+            top = agent_top(cwd)
+            quiet_client("/api/agent/" + urllib.parse.quote(agent_name("codex", top)) + "?" +
+                         urllib.parse.urlencode({"state": "done", "text": "turn complete", "group": agent_group(cwd, top)}))
         return
     raw = sys.stdin.read() if not sys.stdin.isatty() else ""
     data = json.loads(raw or "{}")
@@ -8168,10 +8178,11 @@ def agent_hook(kind: str, args: list) -> None:
         return
     if text is None:
         text = TOOL_WORDS.get(tool, TOOL_WORDS.get(tool.lower(), tool[:24] or "working"))
-    q = {"state": state, "text": text, "group": agent_group(cwd)}
+    top = agent_top(cwd)
+    q = {"state": state, "text": text, "group": agent_group(cwd, top)}
     if kind in ("hermes", "pi") and state == "done":
         q["settle"] = "5"   # they call the model again after a tool: it is done only if nothing follows
-    quiet_client("/api/agent/" + urllib.parse.quote(f"{kind} · {Path(cwd).name}"[:32]) + "?" + urllib.parse.urlencode(q))
+    quiet_client("/api/agent/" + urllib.parse.quote(agent_name(kind, top)) + "?" + urllib.parse.urlencode(q))
 
 
 def main(argv: list[str]) -> int:

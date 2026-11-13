@@ -2,6 +2,8 @@ import importlib.machinery
 import importlib.util
 import io
 import json
+import subprocess
+import tempfile
 import time
 import unittest
 from unittest import mock
@@ -97,6 +99,17 @@ class HookTests(unittest.TestCase):
     def test_prompt_text_never_leaves(self):
         sent = self.run_hook({'hook_event_name': 'UserPromptSubmit', 'prompt': 'my password is hunter2', 'cwd': '/x'})
         self.assertNotIn('hunter2', sent[0])
+
+    def test_one_drone_per_repo_not_per_folder(self):
+        # an agent that runs `cd apps/web` keeps its drone: the name and the group come from the repo, not the folder
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / 'myrepo'
+            (repo / 'apps' / 'web').mkdir(parents=True)
+            subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+            at_root = self.run_hook({'hook_event_name': 'PreToolUse', 'tool_name': 'Bash', 'cwd': str(repo)})[0]
+            in_sub = self.run_hook({'hook_event_name': 'PreToolUse', 'tool_name': 'Bash', 'cwd': str(repo / 'apps' / 'web')})[0]
+        self.assertEqual(at_root, in_sub)
+        self.assertIn('claude%20%C2%B7%20myrepo?', in_sub)
 
     def test_stop_and_unknown(self):
         self.assertIn('state=done', self.run_hook({'hook_event_name': 'Stop', 'cwd': '/x'})[0])
