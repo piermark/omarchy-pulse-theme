@@ -150,6 +150,8 @@ impl Drones {
                 parts.push((format!(" ok {}%", (health * 100.0).round()), if sick { pal.crit } else { pal.ok }, 0.85));
             }
             let border = match state.as_str() { "waiting" => (pal.warn, 1.0), "done" => (pal.ok, 1.0), "failed" => (pal.crit, 1.0), _ => (pal.accent, 0.35) };
+            crate::agents::spot(&name, ox + x, oy + y, s * 1.8);
+            crate::agents::spot(&name, ox + x, oy + y + s * 0.9 + h * 0.012, s * 1.4); // its tag too
             self.tags.push(Tag { x: ox + x, y: oy + y + s * 0.9, parts, dot: col, border: mix(pal.bg, border.0, border.1) });
         }
         self.all.retain(|k, _| seen.contains(k));

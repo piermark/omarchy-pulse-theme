@@ -120,7 +120,8 @@ pub fn start(base: String, token: String) -> Shared {
                 {
                     let s = &mut cur;
                     match got {
-                        Ok(v) => {
+                        Ok(mut v) => {
+                            crate::status::merge(&mut v); // pulse-native: what is down on the internet
                             // a scene that is not one of Pulse's own: ask the hub for its design, once
                             let name = text(&v, &["ui", "scene"]);
                             let known = s.design.as_ref().map(|d| d.0 == name).unwrap_or(false) || s.handwritten.as_deref() == Some(name.as_str());

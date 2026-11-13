@@ -36,6 +36,9 @@ mod floor;
 mod sphere;
 mod street;
 mod weather;
+mod agents;
+mod pet;
+mod status;
 mod worlds;
 mod xf;
 
@@ -195,7 +198,42 @@ impl Pulse {
     /// which answers with a line of text.
     fn click(&mut self, x: f32, y: f32) {
         let t = self.started.elapsed().as_secs_f64();
+        // the same press can arrive twice (the layer surface and the window under it): once is enough
+        thread_local! { static LAST: std::cell::Cell<(f32, f32, f64)> = const { std::cell::Cell::new((-1.0, -1.0, -1.0)) }; }
+        let last = LAST.with(|l| l.get());
+        if (last.0 - x).abs() < 2.0 && (last.1 - y).abs() < 2.0 && t - last.2 < 0.25 {
+            return;
+        }
+        LAST.with(|l| l.set((x, y, t)));
         let mut world = self.world.borrow_mut();
+        // pulse-native: an agent's card, and its buttons
+        match world.card.click(x, y, t) {
+            agents::Clicked::Nothing => {}
+            agents::Clicked::Opened | agents::Clicked::Inside => return,
+            agents::Clicked::Act(name, act) => {
+                if std::env::var("PULSE_CLICK_LOG").is_ok() {
+                    eprintln!("card {name}: {act:?}");
+                }
+                match act {
+                    agents::Act::Focus => {
+                        let st = self.hub.lock().map(|s| s.state.clone()).ok();
+                        let what = st.as_ref().and_then(|s| list(s, &["agents"]).iter().find(|a| text(a, &["name"]) == name).map(|a| text(a, &["text"]))).unwrap_or_default();
+                        world.card.note = Some(("looking for its window…".into(), t));
+                        agents::focus(name, what, world.card_note.clone());
+                    }
+                    agents::Act::Remove => {
+                        hub::post(&self.base, &format!("/api/agent/{}?state=gone", urlenc(&name)));
+                        world.card.close();
+                        world.say = Some((t, format!("{name} · taken away")));
+                    }
+                    agents::Act::Close => {}
+                }
+                return;
+            }
+        }
+        if world.pet.click(x, y, t) {
+            return; // Pip, or its card
+        }
         let storm = world.more.storms.iter().find(|s| ((x - s.1).powi(2) + (y - s.2).powi(2)).sqrt() <= s.3).cloned();
         if let Some((id, _, _, _, title)) = storm {
             if matches!(&self.ack, Some((was, at)) if *was == id && t - at < 5.0) {
@@ -1081,6 +1119,9 @@ fn args() -> Args {
                 }
             }
             "--gpu" => a.gpu = it.next(),
+            "--status" => {
+                it.next(); // read by status::off_by_args()
+            }
             "--layer" => {
                 it.next(); // read by layer_name()
             }
@@ -1094,7 +1135,9 @@ fn args() -> Args {
                 std::process::exit(0);
             }
             _ => {
-                println!("pulse-native {}: Omarchy Pulse, drawn natively (Rust + GPUI)\n\n  pulse-native            the wallpaper (a Wayland layer-shell surface behind your windows)\n  pulse-native --window   an ordinary window\n  --url URL   the hub (default: http://127.0.0.1:PORT from PULSE_PORT or pulse.toml)\n  --fps N     frames a second, 5 to 60 (default: the hub's [pulse] fps)\n  --cpu N     at most N% of one core (default 15 on a laptop, 25 on a desktop, up to twice that on a big screen; PULSE_CPU too): fewer frames a second when they cost more\n  --calm N    frames a second for a calm scene (default 10 on a laptop, 20 on a desktop; PULSE_CALM_FPS)\n  --layer L   bottom (default: over Omarchy's own still background) or background (PULSE_LAYER)\n  --gpu G     vulkan, gl or auto (default; PULSE_GPU too): auto takes OpenGL on Ivy Bridge and Haswell\n  --font NAME the font (default: {FONT})\n  --scene S   the scene: by default the hub's own ([pulse] scene); skyline, sphere, or city (pulse-native's first world)", env!("CARGO_PKG_VERSION"));
+                println!("pulse-native {}: Omarchy Pulse, drawn natively (Rust + GPUI)\n\n  pulse-native            the wallpaper (a Wayland layer-shell surface behind your windows)\n  pulse-native --window   an ordinary window\n  --url URL   the hub (default: http://127.0.0.1:PORT from PULSE_PORT or pulse.toml)\n  --fps N     frames a second, 5 to 60 (default: the hub's [pulse] fps)\n  --cpu N     at most N% of one core (default 15 on a laptop, 25 on a desktop, up to twice that on a big screen; PULSE_CPU too): fewer frames a second when they cost more\n  --calm N    frames a second for a calm scene (default 10 on a laptop, 20 on a desktop; PULSE_CALM_FPS)\n  --status off  no status pages (by default the public status pages of the main services and AIs are read every 5 minutes; PULSE_STATUS)
+  --status-check  read them now, print what they say, and exit
+  --layer L   bottom (default: over Omarchy's own still background) or background (PULSE_LAYER)\n  --gpu G     vulkan, gl or auto (default; PULSE_GPU too): auto takes OpenGL on Ivy Bridge and Haswell\n  --font NAME the font (default: {FONT})\n  --scene S   the scene: by default the hub's own ([pulse] scene); skyline, sphere, or city (pulse-native's first world)", env!("CARGO_PKG_VERSION"));
                 std::process::exit(if x == "--help" || x == "-h" { 0 } else { 2 });
             }
         }
@@ -1103,7 +1146,12 @@ fn args() -> Args {
 }
 
 fn main() {
+    if std::env::args().any(|x| x == "--status-check") {
+        status::check_and_print();
+        return;
+    }
     let a = args();
+    status::start();
     gpu::choose(a.gpu.as_deref());
     let shared = hub::start(a.url.clone(), hub::token());
     let live = hub::start_live(a.url.clone(), hub::token());

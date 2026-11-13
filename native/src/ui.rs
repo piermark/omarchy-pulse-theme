@@ -267,7 +267,21 @@ impl Ui<'_> {
             .child(self.row("↑ up", bytes(num(s, &["tx"]).unwrap_or(0.0), true)))
             .child(self.spark(vec![(rx, self.pal.accent), (tx, self.pal.accent2)], 0.0, 90, 3.0))
             .child(self.row(format!("{}@{}", text(s, &["user"]), text(s, &["host"])), ip));
-        Panel { id: "net".into(), el: self.panel("network", "󰛳", "", "", "", body), h: 2.25 + 3.57 + 3.5 + 1.785 }
+        // pulse-native: the internet's state in one line (the status pages and your line)
+        let (body, extra) = match crate::status::summary(st) {
+            Some((k, v, lv)) => {
+                let c = match lv { "crit" => self.pal.crit, "warn" => self.pal.warn, _ => self.pal.ok };
+                let r = self.r;
+                let line = div().flex().justify_between().items_end().gap(px(0.8 * r)).text_size(px(1.02 * r)).line_height(px(1.785 * r))
+                    .child(div().text_color(self.fg(0.6)).whitespace_nowrap().child(k))
+                    .child(div().flex().items_center().gap(px(0.45 * r)).whitespace_nowrap().overflow_hidden()
+                        .child(div().size(px(0.55 * r)).rounded_full().bg(col(c, 1.0)))
+                        .child(div().text_color(if lv == "ok" { self.fg(1.0) } else { col(c, 1.0) }).child(v)));
+                (body.child(line), 1.785)
+            }
+            None => (body, 0.0),
+        };
+        Panel { id: "net".into(), el: self.panel("network", "󰛳", "", "", "", body), h: 2.25 + 3.57 + 3.5 + 1.785 + extra }
     }
 
     /// pulse.js weatherPanel(), with its drawn icon (wxSvg) and the air (airRow).

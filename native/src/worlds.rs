@@ -36,6 +36,9 @@ pub struct Mem {
     seen: f64,
     /// pulse-native: the updates the last supply pod brought, and when the newest one came down
     supply: (i64, f64),
+    /// pulse-native: when the big ship lifted off (this program's clock), and the countdown last seen
+    ship: f64,
+    lin_prev: Option<f32>,
 }
 
 impl Default for Mem {
@@ -50,13 +53,27 @@ impl Default for Mem {
         let mut hh = 0.5f32;
         let ridge = (0..=64).map(|_| { hh = (hh + (r.next() - 0.5) * 0.22).clamp(0.1, 1.0); hh }).collect();
         let devil = [r.next(), r.next()];
-        Mem { r, stars, far, mesa, rocks, dust, devil, ridge, rov: HashMap::new(), lift: HashMap::new(), flash: HashMap::new(), go: Vec::new(), puffs: Vec::new(), pulses: Vec::new(), met: None, orb: HashMap::new(), rip: Vec::new(), fish: HashMap::new(), prev: None, said: HashMap::new(), seen: 0.0, supply: (-1, -100.0) }
+        Mem { r, stars, far, mesa, rocks, dust, devil, ridge, rov: HashMap::new(), lift: HashMap::new(), flash: HashMap::new(), go: Vec::new(), puffs: Vec::new(), pulses: Vec::new(), met: None, orb: HashMap::new(), rip: Vec::new(), fish: HashMap::new(), prev: None, said: HashMap::new(), seen: 0.0, supply: (-1, -100.0), ship: -1e9, lin_prev: None }
     }
 }
 
 /// What a scene sees: the hub's own `state.scene` when it sends one; else the same view made from the whole state
 /// (when the scene is forced with --scene), with the same care: no names while the screen is shared.
 pub fn view(st: &Value, local_secs: i64) -> Value {
+    let mut v = view_of(st, local_secs);
+    // pulse-native: what is down on the internet, as a panel of the scene (a pod on Mars, a cube on the lake)
+    if let Some(i) = get(st, &["widgets"]).as_array().and_then(|a| a.iter().find(|w| text(w, &["id"]) == "internet")) {
+        let private = get(st, &["privacy"]).as_bool().unwrap_or(false) || get(st, &["screencast"]).as_bool().unwrap_or(false);
+        let rows: Vec<Value> = list(i, &["data", "items"]).iter().map(|it| json!({ "name": if private { String::new() } else { text(it, &["title"]) }, "level": text(it, &["level"]) })).collect();
+        if v.get("panels").map(|p| p.is_object()).unwrap_or(false) {
+            v["panels"]["internet"] = json!({ "rows": rows });
+        }
+    }
+    v["internet"] = get(st, &["internet"]).clone();
+    v
+}
+
+fn view_of(st: &Value, local_secs: i64) -> Value {
     if get(st, &["scene"]).is_object() {
         return get(st, &["scene"]).clone();
     }
@@ -632,6 +649,7 @@ pub fn mars(win: &mut Window, sv: &Value, f: &Frame, mem: &mut Mem, t: f64, labe
         let name = text(ag, &["name"]);
         label(labels, x, y + s * 0.3 + h * 0.004, h * 0.0105, ink, 0.8 * quiet, name.chars().take(16).collect(), false);
         let what = text(ag, &["text"]);
+        crate::agents::spot(&name, g.ox + x, g.oy + y - s, s * 2.4);
         hits.push(Hit { x, y: y - s, r: s * 2.4, text: format!("{} · {stt}{}", if name.is_empty() { "a rover".into() } else { name }, if what.is_empty() { String::new() } else { format!(" · {}", what.chars().take(40).collect::<String>()) }) });
     }
 
@@ -643,19 +661,37 @@ pub fn mars(win: &mut Window, sv: &Value, f: &Frame, mem: &mut Mem, t: f64, labe
         // last hour it is fuelled (frost on its tanks, vapour venting), at the real lift-off it lifts off from Mars
         let (sx, sbase, sh) = (cx + w * 0.235, hz + h * 0.012, h * 0.15);
         let sw = sh * 0.115;
-        let since = lin.map(|v| -v).unwrap_or(-1.0);
-        let flying = (0.0..300.0).contains(&since) && !still;
-        let lift = if flying { (since / 300.0).powf(2.2) * (hz + sh) * 1.2 } else { 0.0 };
+        // the moment it lifts off is kept: the hub moves on to the next launch at once, the ship must still fly away
+        if let Some(v) = lin {
+            let crossed = mem.lin_prev.map(|p| p > 0.0 && v <= 0.0).unwrap_or(false);
+            if (crossed || (v <= 0.0 && v > -60.0)) && t - mem.ship > 600.0 {
+                mem.ship = t + v.min(0.0) as f64;
+            }
+        }
+        mem.lin_prev = lin;
+        let since = (t - mem.ship) as f32;
+        // 4 s of ignition on the pad, then it climbs faster and faster, leans a little east and is gone in a minute;
+        // ten minutes later the next ship has rolled out on the mount
+        let flying = (0.0..75.0).contains(&since) && !still;
+        let gone = (75.0..600.0).contains(&since) || (still && (0.0..600.0).contains(&since));
+        let a = (since - 4.0).max(0.0);
+        let top = hz + sh * 1.3 + h * 0.2;
+        let lift = if flying { top * (a / 40.0).powi(2) } else { 0.0 };
+        let drift = if flying { w * 0.06 * (a / 40.0).powi(3) } else { 0.0 };
+        let roll_in = cl((since - 600.0) / 40.0); // the new ship fades in on the mount
+        let ship_a = if gone { 0.0 } else if since >= 600.0 && since < 640.0 { roll_in } else { 1.0 };
+        let sx_pad = sx;
+        let sx = sx + drift;
         let tower = lit(STEEL, 0.75);
-        g.rect(sx + sw * 1.1, sbase - sh * 1.12, sw * 0.55, sh * 1.12, tower, 0.95);
+        g.rect(sx_pad + sw * 1.1, sbase - sh * 1.12, sw * 0.55, sh * 1.12, tower, 0.95);
         for k in 0..9 {
             let yk = sbase - sh * 1.12 * k as f32 / 9.0;
-            g.line(&[(sx + sw * 1.1, yk), (sx + sw * 1.65, yk - sh * 0.12)], (u * 0.8).max(1.0), mix(tower, WHITE, 0.2), 0.6);
+            g.line(&[(sx_pad + sw * 1.1, yk), (sx_pad + sw * 1.65, yk - sh * 0.12)], (u * 0.8).max(1.0), mix(tower, WHITE, 0.2), 0.6);
         }
-        if !flying {
-            g.rect(sx + sw * 0.5, sbase - sh * 0.86, sw * 0.62, sh * 0.03, tower, 0.95); // the arms that hold it
+        if !flying && !gone {
+            g.rect(sx_pad + sw * 0.5, sbase - sh * 0.86, sw * 0.62, sh * 0.03, tower, 0.95); // the arms that hold it
         }
-        g.rect(sx - sw * 1.4, sbase - sh * 0.05, sw * 2.8, sh * 0.05, mix(tower, DEEP, 0.4), 1.0); // the mount
+        g.rect(sx_pad - sw * 1.4, sbase - sh * 0.05, sw * 2.8, sh * 0.05, mix(tower, DEEP, 0.4), 1.0); // the mount
         let by = sbase - sh * 0.05 - lift;
         if flying {
             let k = cl(since / 6.0);
@@ -668,7 +704,27 @@ pub fn mars(win: &mut Window, sv: &Value, f: &Frame, mem: &mut Mem, t: f64, labe
                 g.glow(sx, sbase, sh * (0.6 + since / 40.0), c8(214, 150, 104), 0.6 * c);
             }
         }
-        if by + sh > -h * 0.1 {
+        if flying && a > 0.0 {
+            // the column of exhaust it leaves, widening and fading as it rises, and the cloud left on the pad
+            let fade = cl(1.0 - (since - 30.0) / 45.0);
+            let bot = sbase;
+            let topy = (by + sh * 0.6).max(-h * 0.2);
+            if bot > topy {
+                let n = 10;
+                for k in 0..n {
+                    let (u0, u1) = (k as f32 / n as f32, (k + 1) as f32 / n as f32);
+                    let (y0, y1) = (topy + (bot - topy) * u0, topy + (bot - topy) * u1);
+                    let x0 = sx_pad + drift * (1.0 - u0).powi(2);
+                    let wd = sw * (0.4 + 2.2 * u0) ;
+                    g.rect(x0 - wd / 2.0, y0, wd, (y1 - y0) + 1.0, mix(c8(255, 236, 214), SAND, u0 * 0.6), 0.22 * fade * (1.0 - u0 * 0.55));
+                }
+            }
+            for k in 0..5 {
+                let r2 = sh * (0.25 + 0.12 * k as f32) * (1.0 + since / 25.0).min(3.0);
+                g.ell(sx_pad + (k as f32 - 2.0) * sw * 1.6 * (1.0 + since / 30.0).min(2.5), sbase - r2 * 0.2, r2, r2 * 0.38, mix(lit(SAND, 1.0), WHITE, 0.25), 0.16 * fade);
+            }
+        }
+        if by + sh > -h * 0.1 && ship_a > 0.0 {
             let steel = lit(c8(206, 210, 216), 1.05);
             g.rect(sx - sw / 2.0, by - sh, sw, sh, steel, 1.0);
             g.rect(sx + sw * 0.18, by - sh, sw * 0.32, sh, mix(steel, DEEP, 0.35), 0.6); // its round side in shade
@@ -699,7 +755,8 @@ pub fn mars(win: &mut Window, sv: &Value, f: &Frame, mem: &mut Mem, t: f64, labe
             Some(v) if v > -300.0 => "liftoff".into(),
             _ => String::new(),
         };
-        label(labels, sx, sbase + h * 0.016, h * 0.0095, ink, 0.75 * quiet, tag.clone(), false);
+        let tag = if flying { "liftoff".to_string() } else if gone { "the next ship is on its way".to_string() } else { tag };
+        label(labels, sx_pad, sbase + h * 0.016, h * 0.0095, ink, 0.75 * quiet, tag.clone(), false);
         hits.push(Hit { x: sx, y: by - sh * 0.5, r: sh * 0.6, text: format!("the ship · it flies with Earth's next launch{}{}", if mission.is_empty() { String::new() } else { format!(" ({mission})") }, if tag.is_empty() { String::new() } else { format!(" · {tag}") }) });
 
         // the solar farm: your solar power (Pulse's energy), each row of panels catching the Sun as much as your
@@ -1102,6 +1159,7 @@ pub fn monolith(win: &mut Window, sv: &Value, pal: &Pal, f: &Frame, mem: &mut Me
         let name = text(ag, &["name"]);
         if s.3 > -0.2 { label(labels, s.1, s.2 + sz * 2.4, h * 0.0105, fg, 0.6 * dim, name.chars().take(16).collect(), false) }
         let what = text(ag, &["text"]);
+        crate::agents::spot(&name, s.1, s.2, sz * 3.0);
         hits.push(Hit { x: s.1, y: s.2, r: sz * 3.0, text: format!("{} · {state}{}", if name.is_empty() { "an agent".into() } else { name }, if what.is_empty() { String::new() } else { format!(" · {}", what.chars().take(40).collect::<String>()) }) });
     };
     for s in shards.iter().filter(|s| s.3 <= 0.0) { shard(&mut g, s, labels, hits) }

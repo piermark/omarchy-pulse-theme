@@ -48,6 +48,13 @@ pub struct World {
     pub more: crate::extra::Mem,
     /// the scenes in code (mars, monolith) and what they keep
     pub code: crate::worlds::Mem,
+    /// pulse-native: the last level of every service on the status pages, to say when one goes down or comes back
+    pub inet_prev: std::collections::HashMap<String, String>,
+    /// pulse-native: the card of the agent you clicked, and the answer of its last button
+    pub card: crate::agents::Card,
+    /// pulse-native: Pip, the creature of the wallpaper
+    pub pet: crate::pet::Pet,
+    pub card_note: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     /// words the scene wants written, and what a click can find: made new at every frame
     pub labels: Vec<crate::draw::Label>,
     pub hits: Vec<crate::draw::Hit>,
@@ -181,7 +188,7 @@ impl World {
                 x += w + r.next() * 0.004;
             }
         }
-        World { city, last_t: 0.0, rockets: Default::default(), bursts: Vec::new(), say: None, seed: 42, rings: Vec::new(), more: Default::default(), code: Default::default(), labels: Vec::new(), hits: Vec::new(), centre: None, pointer: None, wall: false, has_cam: false, simple: false, last: None, beats: Vec::new(), heights: Vec::new(), audio: Vec::new(), tz: 0, prog: "face", alert_at: -1e9, view: None, sounds: Vec::new(), back: Default::default(), back_img: None, ball: Default::default(), ball_img: None, ball_at: -1e9, gaze: (0.0, 0.0), hm: String::new(), date_short: String::new(), typing: false, woke_at: -1e9, car_at: -1e9, cam: None, door: None, alert_env: 0.0, desk_empty: true, sky: Default::default(), floor: Default::default(), drones: Default::default(), focus_k: 0.0, band: (0.0, 0.0), heavens: Default::default(), street: Default::default(), overhead: Default::default(), pushed: Vec::new(), lively: true, motes: Vec::new(), weather: Default::default(), primary: true, git_flash: Default::default(), git_fail: Default::default(), git_pos: Vec::new(), noir: Default::default() }
+        World { city, last_t: 0.0, rockets: Default::default(), bursts: Vec::new(), say: None, seed: 42, rings: Vec::new(), more: Default::default(), code: Default::default(), inet_prev: Default::default(), card: Default::default(), pet: Default::default(), card_note: Default::default(), labels: Vec::new(), hits: Vec::new(), centre: None, pointer: None, wall: false, has_cam: false, simple: false, last: None, beats: Vec::new(), heights: Vec::new(), audio: Vec::new(), tz: 0, prog: "face", alert_at: -1e9, view: None, sounds: Vec::new(), back: Default::default(), back_img: None, ball: Default::default(), ball_img: None, ball_at: -1e9, gaze: (0.0, 0.0), hm: String::new(), date_short: String::new(), typing: false, woke_at: -1e9, car_at: -1e9, cam: None, door: None, alert_env: 0.0, desk_empty: true, sky: Default::default(), floor: Default::default(), drones: Default::default(), focus_k: 0.0, band: (0.0, 0.0), heavens: Default::default(), street: Default::default(), overhead: Default::default(), pushed: Vec::new(), lively: true, motes: Vec::new(), weather: Default::default(), primary: true, git_flash: Default::default(), git_fail: Default::default(), git_pos: Vec::new(), noir: Default::default() }
     }
 }
 
@@ -342,6 +349,8 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
     let (ox, oy) = (ox + qx, oy + qy);
     world.labels.clear();
     world.hits.clear();
+    crate::agents::clear_spots();
+    crate::agents::set_boxes(ui_boxes);
     world.centre = None;
     let hz = h * HORIZON;
     let u = h / 1080.0;
@@ -821,6 +830,10 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
         }
         world.view = view;
     }
+    // pulse-native: a service on the status pages went down or came back (the datacenter's hall strikes too)
+    for (k, words) in crate::status::changes(&mut world.inet_prev, st) {
+        world.fx(&k, &words, false, t);
+    }
     crate::extra::over(win, st, pal, &frame, &mut world.more, t, &mut world.labels);
     for ask in std::mem::take(&mut world.more.asks) {
         match ask {
@@ -838,10 +851,28 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
     let falling = matches!(crate::ui::wx_kind(code), "rain" | "storm" | "snow");
     let pointing = world.pointer.map(|p| t - p.2 < 3.0).unwrap_or(false);
     world.lively = !world.audio.is_empty() || falling || world.overhead.busy() || world.rockets.busy() || world.heavens.busy() || pointing || world.typing || t - world.alert_at < 8.0;
+    if !wall && !simple {
+        // pulse-native: Pip walks on the floor
+        let hub_now = num(st, &["t"]).unwrap_or(0.0);
+        let hour = ((hub_now as i64 + world.tz).rem_euclid(86400)) / 3600;
+        let (pointer, band) = (world.pointer, world.band);
+        world.pet.paint(win, cx, font, st, pal, ox, oy, w, h, t, band, hour, pointer, mars, still_l);
+        if world.pet.busy() {
+            world.lively = true;
+        }
+    }
     crate::draw::vignette(win, ox, oy, w, h); // pulse.css #vig: the edges of the picture a little darker
     // the drones' tags, over the scene (on the web page they are HTML over the canvas); hidden in privacy
     if !(get(st, &["privacy"]).as_bool().unwrap_or(false) || get(st, &["screencast"]).as_bool().unwrap_or(false)) {
         world.drones.tags(win, cx, font, pal, crate::ui::rem(w, h));
+    }
+    // pulse-native: the card of the agent you clicked, over everything
+    if let Some(n) = world.card_note.lock().ok().and_then(|mut g| g.take()) {
+        world.card.note = Some((n, t));
+    }
+    world.card.paint(win, cx, font, st, pal, ox, oy, w, h, t);
+    if world.card.is_open() {
+        world.lively = true;
     }
     if get(st, &["away"]).as_bool().unwrap_or(false) {
         rect(win, ox, oy, w, h, pal.bg, 0.45); // you are away: the city sleeps
