@@ -1,6 +1,6 @@
 # Omarchy Pulse — a live wallpaper for Omarchy
 
-**Version 1.8** · [what's new](#new-in-18) · [try it in ten minutes](#try-18-in-ten-minutes) · [the scene editor](docs/EDITOR.md) · [share and install scenes](docs/PACKAGES.md) · [create a scene](docs/SCENES.md) · [the guide](docs/GUIDE.md) · [every command](docs/GUIDE.md#36-every-command)
+**Version 1.8** · **new: [Pulse native 1.0](#pulse-native-10-the-same-wallpaper-in-rust)**, drawn on the GPU without a browser · [what's new](#new-in-18) · [try it in ten minutes](#try-18-in-ten-minutes) · [the scene editor](docs/EDITOR.md) · [share and install scenes](docs/PACKAGES.md) · [create a scene](docs/SCENES.md) · [the guide](docs/GUIDE.md) · [every command](docs/GUIDE.md#36-every-command)
 
 ![Omarchy Pulse 1.5: the noir scene, a futuristic megacity at night with the agent's face on the big screen, candles for what expires, the energy river, robots on the floor (demo data)](preview.png)
 
@@ -59,6 +59,80 @@ or anything you push from a script. Camera feeds, AI briefs, Home Assistant, ser
 
 Made for **Omarchy 4.5**. By [Marco Porro](https://x.com/MarcoPorro), the author of
 [OmarchyTV](https://github.com/piermark/omarchytv) (the Live screen of OmarchyTV, now on your desktop).
+
+## Pulse native 1.0: the same wallpaper, in Rust
+
+**pulse-native** draws Pulse 1.8 natively on the GPU, in Rust with [GPUI](https://github.com/gpui-ce/gpui-ce)
+(the toolkit of the Zed editor), with no browser underneath. It reads the same hub, the same token and the same
+`pulse.toml` as the web wallpaper, so everything Pulse does stays as it is: sources, panels, alerts, agents, the
+scene editor, the voice. Only the drawing changes. The web wallpaper of 1.8 stays the default, and is still what
+runs on OmarchyTV: you choose which one draws your desktop, and go back with one command.
+
+- **The same Pulse 1.8**, translated line by line from `pulse.js` and `pulse.css`: every scene (`sphere`, `skyline`,
+  `orbit`, `calm`, `hacker`, `noir`, `mars`, `monolith`, `pond`), the scene editor's and the community's `.pulse`
+  scenes, the real sky, the weather, the city and its life, Pulse Net, the panels, layout edit.
+- **More of a game** where a browser cannot: lights that burn white at their core, the Sun's starburst and lens flare,
+  the sphere's light turning in the wet air, LEDs that glide; your city's landmarks lit from where the Sun or the
+  Moon really is, floodlit at night (the Statue of Liberty in New York, Christ the Redeemer in Rio, and more
+  cities); a giant LED billboard in the noir city; on Mars, flying saucers carry the flights over you and a colony
+  grows from your data (a ship that flies with Earth's next real launch, a solar farm, greenhouses, colonists,
+  supply pods for your updates).
+- **Light on the PC**: no browser, the drawing on the GPU, a CPU budget measured as `top` measures it (15% of a core
+  on a laptop, 25% on a desktop, more on a big screen), slower when nothing moves, nothing drawn when a window
+  covers the monitor. Full resolution on every screen, 4K and fractional scales included.
+- **Old GPUs too**: on Intel Ivy Bridge and Haswell it draws with OpenGL by itself.
+
+### Install pulse-native
+
+Pulse 1.8 must be installed first (above: `extras/install-live`), because its hub is what pulse-native reads. Then:
+
+```bash
+sudo pacman -S --needed rust wayland libxkbcommon libxkbcommon-x11 libxcb vulkan-icd-loader fontconfig freetype2
+git clone -b native https://github.com/piermark/omarchy-pulse-theme.git ~/pulse-native
+cd ~/pulse-native/native
+cargo build --release            # the first build takes a few minutes
+./install-native                 # it becomes your wallpaper, now and at every login
+./target/release/pulse-native --version
+```
+
+It adds two files to `~/.local/share/omarchy-pulse/` and one systemd drop-in; none of Pulse's own files change. It
+draws when Pulse itself would (the `pulse` theme, or `ALWAYS=1` in `~/.config/omarchy-pulse/live.conf`).
+
+**Update**: `cd ~/pulse-native && git pull && cd native && cargo build --release && ./install-native`
+
+**Back to the web wallpaper**: `cd ~/pulse-native/native && ./install-native --remove`
+
+**Try it without installing**: `./target/release/pulse-native --window` (a window) or
+`./target/release/pulse-native` (the wallpaper, with the web one stopped).
+
+| Option | |
+|---|---|
+| `--scene S` | the scene (by default `[pulse] scene`) |
+| `--fps N` | the most frames a second (by default `[pulse] fps`) |
+| `--cpu N` | the most of one core it may use, in percent (`PULSE_CPU`) |
+| `--calm N` | frames a second when nothing fast moves (`PULSE_CALM_FPS`) |
+| `--gpu G` | `auto`, `gl` or `vulkan` (`PULSE_GPU`) |
+| `PULSE_PERF=1` | what each part of a frame costs, every five seconds |
+
+**If something is wrong**: `journalctl --user -u omarchy-pulse -e` says what it did. Few frames a second on a big
+screen: `--cpu 40 --calm 30`. A stall on an old Intel GPU: `--gpu gl`. The whole guide, every option and how to
+measure it against the web wallpaper: [native/README.md](https://github.com/piermark/omarchy-pulse-theme/blob/native/native/README.md).
+
+**Changelog**
+
+- **1.0**: the first release: the noir scene translated from pulse.js with its LED billboard, Mars's saucers and
+  colony, landmarks lit by the real Sun and Moon and sixteen more cities, the × in layout edit, the CPU budget and
+  the calm frame rate set by the computer ([#42](https://github.com/piermark/omarchy-pulse-theme/issues/42)), full
+  resolution up to a scale of 3, the workspaces tower, friends and parcels checked again against pulse.js.
+- **0.16**: each group of shapes drawn in a target as big as the group instead of the whole screen (about sixty a
+  frame: a fraction of the GPU's memory traffic, same quality); OpenGL on Haswell; memory given back; a click on the
+  notifications panel clears it.
+- **0.15**: the 1.8 look as a game would draw it. **0.14**: a smooth sphere, better rain and clouds. **0.13**: less
+  CPU, steady memory. **0.10–0.12**: planes that fly, the network on the floor, the sky and the city translated from
+  pulse.js. **0.1–0.9**: from the first renderer to the whole of Pulse 1.8.
+
+Still different from the web page: community scenes written in JavaScript do not run (the three that come with
+Pulse, `mars`, `monolith` and `pond`, are written again in Rust).
 
 ## New in 1.8
 
