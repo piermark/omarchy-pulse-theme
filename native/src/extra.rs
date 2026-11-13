@@ -25,6 +25,8 @@ pub struct Mem {
     flakes: Vec<[f32; 3]>,
     /// earthquakes: when, magnitude, from where (azimuth), near?
     quakes: Vec<(f64, f32, f32, bool)>,
+    /// each friend's last flashAge from the hub, and when it came
+    friend_flash: HashMap<String, (f64, f64)>,
     tsunamis: Vec<(f64, f32, bool)>,
     gusts: Vec<[f32; 4]>,
     pollen: Vec<[f32; 4]>,
@@ -47,7 +49,7 @@ pub struct Mem {
 
 impl Default for Mem {
     fn default() -> Self {
-        Mem { r: Rand::new(4711), bolts: Vec::new(), next_bolt: 0.0, flakes: Vec::new(), quakes: Vec::new(), tsunamis: Vec::new(), gusts: Vec::new(), pollen: Vec::new(), infra: HashMap::new(), lift: 0.0, wifi: HashMap::new(), truck: HashMap::new(), ny_fx: 0.0, flare: -1e9, build: -1e9, ring: -1e9, ringing: false, asks: Vec::new(), flash: 0.0, storms: Vec::new() }
+        Mem { r: Rand::new(4711), bolts: Vec::new(), next_bolt: 0.0, flakes: Vec::new(), quakes: Vec::new(), friend_flash: HashMap::new(), tsunamis: Vec::new(), gusts: Vec::new(), pollen: Vec::new(), infra: HashMap::new(), lift: 0.0, wifi: HashMap::new(), truck: HashMap::new(), ny_fx: 0.0, flare: -1e9, build: -1e9, ring: -1e9, ringing: false, asks: Vec::new(), flash: 0.0, storms: Vec::new() }
     }
 }
 
@@ -67,6 +69,31 @@ impl G<'_> {
     fn poly(&mut self, pts: &[(f32, f32)], c: C, a: f32) { let p: Vec<(f32, f32)> = pts.iter().map(|p| (p.0 + self.ox, p.1 + self.oy)).collect(); crate::draw::poly(self.win, &p, c, a) }
     fn line(&mut self, pts: &[(f32, f32)], lw: f32, c: C, a: f32) { let p: Vec<(f32, f32)> = pts.iter().map(|p| (p.0 + self.ox, p.1 + self.oy)).collect(); crate::draw::line(self.win, &p, lw, c, a) }
     fn frame(&mut self, x: f32, y: f32, w: f32, h: f32, lw: f32, c: C, a: f32) { crate::draw::frame(self.win, self.ox + x, self.oy + y, w, h, lw, c, a) }
+}
+
+/// pulse.js APP_ICONS: a Nerd Font icon for the app of a window (by its class), or a window.
+fn app_icon(cls: &str) -> &'static str {
+    let c = cls.to_lowercase();
+    if c.is_empty() {
+        return "";
+    }
+    let any = |ws: &[&str]| ws.iter().any(|w| c.contains(w));
+    if any(&["chrom", "brave", "vivaldi"]) { "\u{f268}" }
+    else if any(&["firefox", "zen", "librewolf"]) { "\u{f269}" }
+    else if any(&["ghostty", "alacritty", "kitty", "foot", "wezterm", "terminal", "konsole"]) { "\u{f120}" }
+    else if any(&["code", "cursor", "zed", "nvim", "neovide", "jetbrains", "idea"]) { "\u{f121}" }
+    else if any(&["spotify", "music", "rhythmbox"]) { "\u{f1bc}" }
+    else if any(&["discord", "vesktop"]) { "\u{f392}" }
+    else if any(&["signal", "telegram", "whatsapp", "slack", "teams", "chat"]) { "\u{f086}" }
+    else if any(&["nautilus", "thunar", "files", "dolphin", "yazi"]) { "\u{f07b}" }
+    else if any(&["steam", "lutris", "game"]) { "\u{f1b6}" }
+    else if any(&["obsidian", "typora", "notes", "logseq"]) { "\u{f249}" }
+    else if any(&["mpv", "vlc", "celluloid", "video"]) { "\u{f03d}" }
+    else if any(&["gimp", "krita", "inkscape", "pinta"]) { "\u{f1fc}" }
+    else if any(&["mail", "thunderbird", "hey"]) { "\u{f0e0}" }
+    else if any(&["1password", "bitwarden", "keepass"]) { "\u{f084}" }
+    else if any(&["libreoffice", "office", "docs"]) { "\u{f15c}" }
+    else { "\u{f2d0}" }
 }
 
 fn lab(labels: &mut Vec<Label>, x: f32, y: f32, size: f32, c: C, a: f32, text: String, bold: bool) {
@@ -237,7 +264,7 @@ pub fn ground(win: &mut Window, st: &Value, pal: &Pal, f: &Frame, mem: &mut Mem,
         let tower = list(st, &["tower"]);
         let one = [serde_json::json!({ "id": 1, "active": true, "apps": [] })];
         let floors: &[Value] = if tower.is_empty() { &one } else { tower };
-        let nf = floors.len().min(12);
+        let nf = floors.len().min(40); // (pulse.js draws them all)
         let fh = (h * 0.036).min(h * 0.22 / nf as f32);
         let (tw, x, y0) = (h * 0.085, b0 + (b1 - b0) * 0.035, hz - 1.0);
         let top = y0 - fh * nf as f32;
@@ -258,7 +285,14 @@ pub fn ground(win: &mut Window, st: &Value, pal: &Pal, f: &Frame, mem: &mut Mem,
                 let name = app.as_str().unwrap_or("");
                 let hsh = name.bytes().fold(0i32, |a, b| a.wrapping_mul(31).wrapping_add(b as i32));
                 let c = if hide || name.is_empty() { ac } else { [ac, a2, pal.ok, pal.warn, mix(ac, fg, 0.4)][(hsh.unsigned_abs() % 5) as usize] };
-                g.rect(x + tw * (0.24 + k as f32 * 0.17), fy + fh * 0.16, tw * 0.15, fh * 0.68, c, if active { 0.9 } else { 0.55 });
+                let (rw, wx) = (tw * 0.15, x + tw * (0.24 + k as f32 * 0.17));
+                g.rect(wx, fy + fh * 0.16, rw, fh * 0.68, c, if active { 0.9 } else { 0.55 });
+                // pulse.js appIcon(): the app's icon on its room, when the floors are tall enough
+                let ic = app_icon(name);
+                if !ic.is_empty() && fh > h * 0.018 {
+                    let sz = ((rw).min(fh * 0.6) * 0.95).round();
+                    lab(labels, wx + rw / 2.0, fy + fh / 2.0 - sz * 0.62, sz, bg, 0.95, ic.into(), false);
+                }
             }
             g.rect(x, fy, tw, u.max(1.0), fg, 0.12);
         }
@@ -304,12 +338,23 @@ pub fn ground(win: &mut Window, st: &Value, pal: &Pal, f: &Frame, mem: &mut Mem,
     let friends = list(st, &["friends"]);
     if city && !friends.is_empty() {
         let x0 = b1 - (b1 - b0) * 0.035;
-        for (i, fr) in friends.iter().take(8).enumerate() {
+        for (i, fr) in friends.iter().take(40).enumerate() {
             let week = num(fr, &["week"]).unwrap_or(0.0) as f32;
             let tw = h * 0.026;
             let (x, hh) = (x0 - i as f32 * tw * 1.6 - tw, h * (0.04 + 0.09 * ((1.0 + week).ln() / 80f32.ln()).min(1.0)));
             let top = hz - hh;
-            let fl = num(fr, &["flashAge"]).map(|a| (1.0 - a as f32 / 4.0).max(0.0)).unwrap_or(0.0);
+            // pulse.js: the age the hub gave, plus the time since it gave it (the flash fades out between states)
+            let name = text(fr, &["name"]);
+            let fl = match num(fr, &["flashAge"]) {
+                Some(a) => {
+                    let e = mem.friend_flash.entry(name.clone()).or_insert((a, t));
+                    if e.0 != a {
+                        *e = (a, t);
+                    }
+                    (1.0 - (e.0 + (t - e.1)) as f32 / 4.0).max(0.0)
+                }
+                None => 0.0,
+            };
             let floors = ((hh / (h * 0.008)).round() as usize).max(2);
             g.rect(x, top, tw, hh, mix(bg, a2, 0.16), 0.85);
             g.frame(x, top, tw, hh, u, a2, 0.45);
@@ -325,7 +370,7 @@ pub fn ground(win: &mut Window, st: &Value, pal: &Pal, f: &Frame, mem: &mut Mem,
             if !ci.is_empty() {
                 g.rect(x + tw / 2.0 - 1.5 * u, top - 4.0 * u, 3.0 * u, 3.0 * u, if ci == "fail" { pal.crit } else { pal.ok }, if still || (tf * 0.8 + i as f32).rem_euclid(1.6) < 1.2 { 1.0 } else { 0.3 });
             }
-            if !hide { lab(labels, x + tw / 2.0, top - 20.0 * u, h * 0.0095, a2, 0.75, text(fr, &["name"]), true) }
+            if !hide { lab(labels, x + tw / 2.0, top - 8.0 * u - h * 0.0095 * 0.925, (h * 0.0095).round(), a2, 0.75, text(fr, &["name"]), true) }
         }
     }
     // ---- the parcels of your updates: one each (up to 14), the kernel in red, the AUR ones in the second accent
@@ -346,17 +391,18 @@ pub fn ground(win: &mut Window, st: &Value, pal: &Pal, f: &Frame, mem: &mut Mem,
                 g.rect(bx + s * 0.45, by, s * 0.1, s * 0.88, c, 0.9); // the tape
             }
             if n > 0 {
-                lab(labels, x0, y0 + h * 0.018, (h * 0.012).round(), if kernel { pal.crit } else { fg }, 0.9, format!("{n} {}{}", if n == 1 { "update" } else { "updates" }, if kernel { " · new kernel" } else { "" }), true);
+                lab(labels, x0, y0 + h * 0.018 - h * 0.012 * 0.925, (h * 0.012).round(), if kernel { pal.crit } else { fg }, 0.9, format!("{n} {}{}", if n == 1 { "update" } else { "updates" }, if kernel { " · new kernel" } else { "" }), true);
             }
             if !news.is_empty() {
                 // Arch news that asks for manual intervention: a road sign with a blinking light
                 let (sx, sy) = (x0 + s * 4.2, y0 - s * 3.6);
                 g.rect(sx - u, sy, 2.0 * u, y0 - sy, fg, 0.5);
-                g.poly(&[(sx, sy - s * 1.1), (sx + s * 0.95, sy + s * 0.5), (sx - s * 0.95, sy + s * 0.5)], pal.warn, 0.95);
-                lab(labels, sx, sy - s * 0.45, s * 0.9, bg, 1.0, "!".into(), true);
-                if still || tf.rem_euclid(1.2) < 0.7 { g.glow(sx, sy - s * 1.3, s * 0.9, pal.crit, 0.9) }
+                // (a label's box starts 0.925 of its size above the canvas's baseline)
+                let on = still || tf.rem_euclid(1.2) < 0.7;
+                g.poly(&[(sx, sy - s * 1.3), (sx + s * 0.9, sy + s * 0.2), (sx - s * 0.9, sy + s * 0.2)], pal.warn, if on { 0.95 } else { 0.45 });
+                lab(labels, sx, sy - s * 0.05 - s * 0.9 * 0.925, (s * 0.9).round(), bg, 1.0, "!".into(), true);
                 if !private(st) {
-                    lab(labels, sx, y0 + h * 0.036, (h * 0.011).round(), pal.warn, 0.95, "news: read before you update".into(), true);
+                    lab(labels, sx, y0 + h * 0.036 - h * 0.011 * 0.925, (h * 0.011).round(), pal.warn, 0.95, "news: read before you update".into(), true);
                 }
             }
         }

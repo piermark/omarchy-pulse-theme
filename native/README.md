@@ -1,18 +1,21 @@
-# pulse-native: Omarchy Pulse in Rust + GPUI (experimental)
+# pulse-native 1.0: Omarchy Pulse in Rust + GPUI
 
 A parallel renderer for Omarchy Pulse. The web page stays the default (and is what runs on OmarchyTV); this one
 paints the same wallpaper natively on the GPU, with no browser underneath. It reads the same hub: the same
 `omarchy-pulse` service, the same token and the same `pulse.toml`.
 
-**Status: 0.17, experimental.** The web page stays the default. This renderer is being made a line-by-line
+**Version 1.0.** A complete renderer of Pulse 1.8 beside the web page, which stays (and is what runs on
+OmarchyTV): you choose which one draws your wallpaper, and go back with one command. It is a line-by-line
 translation of the published Pulse 1.8 (`pulse.js` and `pulse.css`), so that it looks and moves the same, and a
 little more like a game where the web page cannot: lights that burn white at their core (the canvas's "lighter"
 mode, which GPUI does not have), the Sun's starburst and lens flare, beams of the sphere's light turning in the wet
-air with dust drifting in it, LEDs that glide instead of stepping.
+air with dust drifting in it, LEDs that glide instead of stepping, landmarks lit by the real Sun and Moon, a colony on
+Mars, a giant LED billboard in the noir city. Everything is drawn at the screen's own resolution, 4K included.
 
 ## Install, and go back
 
-It needs Rust, a Wayland compositor with wlr-layer-shell (Hyprland on Omarchy) and a Vulkan driver. Pulse must be
+It needs Rust, a Wayland compositor with wlr-layer-shell (Hyprland on Omarchy) and a Vulkan or OpenGL driver (Mesa
+on Intel and AMD, the NVIDIA driver). Pulse must be
 installed already (`extras/install-live`): its hub, `omarchy-pulse serve`, is what both renderers read. The code
 lives on the `native` branch, not on `main`.
 
@@ -136,13 +139,27 @@ From the same state the web page reads:
 - **Pulse Net**: the firewall and what it blocks, the devices' radar, a building for each switch with its ports and
   the roads between neighbours, a tower for each host with its VMs and their migrations, the Wi-Fi antennas and
   their people, a truck for each backup, the intruders.
-- **Layout edit** (`omarchy-pulse layout edit`): drag a panel to a column, the right button hides it and shows it
-  again, Save, Cancel, Reset.
+- **Layout edit** (`omarchy-pulse layout edit`): drag a panel to a column, the × (or the right button) hides it and
+  shows it again, Save, Cancel, Reset.
 - **pond**, the example scene; in the editor's scenes a picture's tint and the clicks on shapes with their actions;
   camera panels, and the camera and the car on the sphere.
 
+## Why it may not start, or look wrong
+
+- **Nothing changes**: the Omarchy theme is not `pulse` and `live.conf` has no `ALWAYS=1`; or the hub is not running
+  (`systemctl --user status omarchy-pulse`). `journalctl --user -u omarchy-pulse -e` says which.
+- **A box in the middle of the screen**: an old build; update (fractional scales are read from `hyprctl`).
+- **Stalls or a black screen on an old Intel GPU**: `--gpu gl` (automatic on Ivy Bridge and Haswell).
+- **Few frames a second on a big screen**: raise the budget, `--cpu 40` (or `PULSE_CPU=40` in the drop-in), and
+  `--calm 30` for a smoother calm scene. `PULSE_PERF=1` prints what each part of a frame costs.
+- **Night in the middle of the day**: the hub has no location for the real Sun; set it in `pulse.toml` (the
+  weather's city): pulse-native then follows the weather's sunrise and sunset.
+
 ## Changes
 
+- **1.0**: the first release. Since 0.17: the workspaces tower, your friends' towers and the parcels checked again
+  line by line against pulse.js (the apps' icons on their rooms, the friends' push that fades, the road sign that
+  blinks, the words in the same place), the ivy's flowers on the city's towers after a week without a reboot.
 - **0.17**: the noir scene translated from pulse.js (the megacity, its searchlights, signs, cars in the air), its big
   screen a giant LED billboard; on Mars the flights are flying saucers with their tags, and a colony grows from your
   data (a ship that flies with Earth's next real launch, solar farm, greenhouses, colonists, supply pods for your
@@ -157,6 +174,13 @@ From the same state the web page reads:
   once and its pixels in a faster loop; the CPU budget measured on the whole process; OpenGL on Ivy Bridge and
   Haswell; memory given back; a click on the notifications panel clears it, a click on a light toggles it.
 - **0.15**: the 1.8 look as a game would draw it: hot lights, the Sun's flare, the sphere's beams and dust.
+- **0.14**: a smooth sphere, an even pace, better rain and clouds. **0.13**: less CPU, steady memory, the core of
+  the other scenes. **0.12**: what passes over you, the weather and the life of the city. **0.11**: the city, its
+  light and the sky, translated from pulse.js. **0.10**: planes that fly, the network on the floor, clicks that
+  close. **0.9**: the sphere of Pulse 1.8. **0.8**: the look of 1.8, Pulse Net, layout edit. **0.7**: the first
+  complete port. **0.6**: the real stars, the whole weather panel. **0.5**: the scene editor's and the community's
+  `.pulse` scenes. **0.4**: the living city. **0.3**: the LED sphere, the ISS, launches. **0.2**: the look of Pulse
+  1.8. **0.1**: the first renderer.
 
 ## Still different from the web page
 
@@ -164,8 +188,9 @@ From the same state the web page reads:
   the skyline and say so. The three that come with Pulse (mars, monolith, pond) are written again in Rust;
 - what pulse-native adds is its own (Mars's colony and saucers, the lit landmarks, the extra cities, the LED
   billboard): the web page does not have it;
-- some pieces written from pulse.js in the first versions are not yet compared line by line again: the
-  earthquake, Christmas and the new year, Pulse Net, the garden, the workspaces tower, the friends, the parcels.
+- a few pieces written from pulse.js in the first versions have not been compared line by line again since: the
+  earthquake, Christmas and the new year, Pulse Net and the garden. They are there and work; small differences in
+  their look may remain.
 
 ## What stays the same
 

@@ -231,6 +231,43 @@ pub fn ivy(win: &mut Window, pal: &Pal, f: &Frame, x: f32, y0: f32, hgt: f32, se
     }
 }
 
+/// pulse.js ivyOn2() with its flowers: the ivy on a building of the city, and after a week without a reboot three
+/// flowers on it (bloomOpen(), flower()).
+#[allow(clippy::too_many_arguments)]
+pub fn ivy_flowers(win: &mut Window, pal: &Pal, f: &Frame, x: f32, y0: f32, hgt: f32, seed: f32, still: bool, uptime: f32) {
+    ivy(win, pal, f, x, y0, hgt, seed, still);
+    if hgt < f.h * 0.004 {
+        return;
+    }
+    let days = uptime / 86400.0;
+    let op = if days < 7.0 { 0.0 } else if still { 1.0 } else { (0.25 + (days - 7.0) * 4.0 * 0.75).min(1.0) };
+    if op <= 0.0 {
+        return;
+    }
+    let u = f.h / 1080.0;
+    let sway = if still { 0.0 } else { (f.t * 0.8 + seed).sin() * u * 0.6 };
+    for k in 0..3 {
+        let qf = 0.35 + k as f32 * 0.25;
+        flower(win, pal, x + (qf * 11.0 + seed).sin() * 3.0 * u + sway * qf, y0 - hgt * qf, 4.5 * u, op, f.t, seed + k as f32, still);
+    }
+}
+
+/// pulse.js flower(): five petals round a warm heart; open 0..1, breathing a little.
+#[allow(clippy::too_many_arguments)]
+pub fn flower(win: &mut Window, pal: &Pal, xx: f32, yy: f32, r: f32, open: f32, t: f32, seed: f32, still: bool) {
+    if open <= 0.0 {
+        return;
+    }
+    let br = if still { 1.0 } else { 1.0 + 0.06 * (t * 1.3 + seed).sin() };
+    let (pr, d) = (r * 0.48 * (0.45 + 0.55 * open) * br, r * 0.52 * open * br);
+    let rot = seed * 1.7 + if still { 0.0 } else { (t * 0.5 + seed).sin() * 0.15 };
+    for p in 0..5 {
+        let a = rot + p as f32 * TAU / 5.0;
+        draw::arc_fill(win, xx + a.cos() * d, yy + a.sin() * d, pr, pr * 0.72, a, 0.0, TAU, mix(pal.accent2, pal.fg, 0.12), 0.95);
+    }
+    draw::arc_fill(win, xx, yy, r * 0.26, r * 0.26, 0.0, 0.0, TAU, pal.warn, 1.0);
+}
+
 /// pulse.js draw(): the skyline, a tower for each CPU core either side of the core, as tall as the core's load (it
 /// dances with your music; lower in front of a real city; lower in a focus), its windows lit as the RAM fills; in the
 /// 1.8 look a building, not a card: its reflection, a side going back toward the horizon (lit when it looks at the
@@ -330,7 +367,7 @@ pub fn towers(win: &mut Window, st: &Value, pal: &Pal, f: &Frame, lt: Option<Lig
         }
         if ivy_on && i % 3 == 0 && uptime > 3600.0 {
             // 1.6: the ivy of your uptime
-            ivy(win, pal, f, bx + if s2 > 0.0 { 0.0 } else { bw }, hz, hh * (uptime / 86400.0 / 7.0 * (0.6 + (i % 5) as f32 * 0.1)).min(0.85), i as f32, still);
+            ivy_flowers(win, pal, f, bx + if s2 > 0.0 { 0.0 } else { bw }, hz, hh * (uptime / 86400.0 / 7.0 * (0.6 + (i % 5) as f32 * 0.1)).min(0.85), i as f32, still, uptime);
         }
     }
 }
