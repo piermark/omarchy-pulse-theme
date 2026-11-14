@@ -799,7 +799,7 @@ pub fn racks(a: &Ask, w: usize, h: usize, an: &mut Anchors) -> Option<Pixmap> {
                         }
                     }
                     let l = pt((t0 + t1) / 2.0, 0.92);
-                    leds.push((i, (l.0, l.1, (px_h * 0.18).clamp(0.8, 4.0 * u)), (0.0, 0.0, 0.0)));
+                    leds.push((i, (l.0, l.1, (px_h * 0.18).clamp(0.8, (4.0 * u).max(0.8))), (0.0, 0.0, 0.0)));
                 }
                 1 => {
                     // a storage shelf: three rows of drives, each with its little blue light
@@ -810,11 +810,11 @@ pub fn racks(a: &Ask, w: usize, h: usize, an: &mut Anchors) -> Option<Pixmap> {
                             let q = [pt(tt0, s0), pt(tt0, s0 + 0.065), pt(tt0 + 0.75 / 42.0, s0 + 0.065), pt(tt0 + 0.75 / 42.0, s0)];
                             sk.fill(&q, c8(150, 156, 168), 0.9);
                             let led = pt(tt0 + 0.6 / 42.0, s0 + 0.055);
-                            sk.disc(led.0, led.1, (px_h * 0.025).clamp(0.5, 2.0 * u), c8(80, 170, 255), 0.9);
+                            sk.disc(led.0, led.1, (px_h * 0.025).clamp(0.5, (2.0 * u).max(0.5)), c8(80, 170, 255), 0.9);
                         }
                     }
                     let l = pt((t0 + t1) / 2.0, 0.95);
-                    leds.push((i, (l.0, l.1, (px_h * 0.06).clamp(0.8, 4.0 * u)), (0.0, 0.0, 0.0)));
+                    leds.push((i, (l.0, l.1, (px_h * 0.06).clamp(0.8, (4.0 * u).max(0.8))), (0.0, 0.0, 0.0)));
                 }
                 2 => {
                     // a switch: two rows of ports, cables leaving to the side in bundles
@@ -828,7 +828,7 @@ pub fn racks(a: &Ask, w: usize, h: usize, an: &mut Anchors) -> Option<Pixmap> {
                             sk.fill(&q, c8(6, 8, 10), 1.0);
                             if k < 5 && ports.len() < 600 && b % 2 == 0 {
                                 let lp = pt(tt0 + 0.05 / 42.0, s0 + 0.013);
-                                ports.push((lp.0, lp.1, (px_h * 0.05).clamp(0.5, 2.0 * u)));
+                                ports.push((lp.0, lp.1, (px_h * 0.05).clamp(0.5, (2.0 * u).max(0.5))));
                             }
                         }
                     }
@@ -838,7 +838,7 @@ pub fn racks(a: &Ask, w: usize, h: usize, an: &mut Anchors) -> Option<Pixmap> {
                         let from = pt(t0 + 0.6 / 42.0, s0);
                         let to = pt(t1 + 1.5 / 42.0, 0.02);
                         let mid = ((from.0 + to.0) / 2.0, from.1.max(to.1) + px_h * 0.8);
-                        sk.stroke(&[from, mid, to], (px_h * 0.12).clamp(0.6, 3.0 * u), cols[c % 4], 0.85);
+                        sk.stroke(&[from, mid, to], (px_h * 0.12).clamp(0.6, (3.0 * u).max(0.6)), cols[c % 4], 0.85);
                     }
                 }
                 3 => {
@@ -848,7 +848,7 @@ pub fn racks(a: &Ask, w: usize, h: usize, an: &mut Anchors) -> Option<Pixmap> {
                         let s0 = 0.06 + b as f32 * 0.037;
                         let p0 = pt(t0 + 0.3 / 42.0, s0 + 0.012);
                         let col = [c8(250, 200, 50), c8(70, 160, 255), c8(240, 240, 240), c8(255, 120, 60), c8(200, 120, 255)][(b + slot as usize) % 5];
-                        sk.stroke(&[p0, pt(t1 + 0.4 / 42.0, s0 + 0.01)], (px_h * 0.1).clamp(0.5, 2.0 * u), col, 0.9);
+                        sk.stroke(&[p0, pt(t1 + 0.4 / 42.0, s0 + 0.01)], (px_h * 0.1).clamp(0.5, (2.0 * u).max(0.5)), col, 0.9);
                     }
                 }
                 _ => {
@@ -1053,10 +1053,11 @@ mod tests {
     }
     #[test]
     fn plates_paint() {
-        for k in ["station", "abyss", "racks", "moonbase"] {
-            let a = Ask { kind: k.into(), w: 320, h: 180, sf: 1.0, sun: 20, cloud: 40, moon: 60, waxing: true, turn: 3, repos: vec![("a".into(), "ok".into(), 10), ("b".into(), "fail".into(), 40)], accent: [120, 200, 255], hot: 50, cores: 8 };
+        // a normal small screen and a tiny one (every size scaled by the height must still make sense)
+        for (k, w, h) in ["station", "abyss", "racks", "moonbase"].iter().flat_map(|k| [(*k, 320u32, 180u32), (*k, 64, 36)]) {
+            let a = Ask { kind: k.into(), w, h, sf: 1.0, sun: 20, cloud: 40, moon: 60, waxing: true, turn: 3, repos: vec![("a".into(), "ok".into(), 10), ("b".into(), "fail".into(), 40)], accent: [120, 200, 255], hot: 50, cores: 8 };
             let p = crate::plate::paint(&a).expect(k);
-            assert_eq!(p.rgba.len(), 320 * 180 * 4);
+            assert_eq!(p.rgba.len(), (w * h * 4) as usize);
             assert!(!p.anchors.is_empty(), "{k}");
         }
     }

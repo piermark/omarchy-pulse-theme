@@ -370,18 +370,27 @@ impl Holder {
     pub fn update(&mut self, want: Ask) -> bool {
         let mut fresh = false;
         if let Some((ask, rx)) = &self.pending {
-            if let Ok(res) = rx.try_recv() {
-                if let Some(p) = res {
-                    if let Some(im) = image::RgbaImage::from_raw(p.w, p.h, bgra(p.rgba)) {
-                        if let Some(old) = self.img.replace(std::sync::Arc::new(gpui::RenderImage::new(vec![image::Frame::new(im)]))) {
-                            self.stale.push(old);
+            match rx.try_recv() {
+                Ok(res) => {
+                    if let Some(p) = res {
+                        if let Some(im) = image::RgbaImage::from_raw(p.w, p.h, bgra(p.rgba)) {
+                            if let Some(old) = self.img.replace(std::sync::Arc::new(gpui::RenderImage::new(vec![image::Frame::new(im)]))) {
+                                self.stale.push(old);
+                            }
+                            self.anchors = p.anchors;
+                            fresh = true;
                         }
-                        self.anchors = p.anchors;
-                        fresh = true;
                     }
+                    self.ask = Some(ask.clone());
+                    self.pending = None;
                 }
-                self.ask = Some(ask.clone());
-                self.pending = None;
+                // the painter stopped without a picture (it should not): keep the old one, and do not ask for the
+                // same picture again and again
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.ask = Some(ask.clone());
+                    self.pending = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
         if self.pending.is_none() && self.ask.as_ref() != Some(&want) {

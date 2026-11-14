@@ -4,7 +4,7 @@ A parallel renderer for Omarchy Pulse. The web page stays the default (and is wh
 paints the same wallpaper natively on the GPU, with no browser underneath. It reads the same hub: the same
 `omarchy-pulse` service, the same token and the same `pulse.toml`.
 
-**Version 1.1.0.** New in 1.1, beyond the web page: what is down on the internet (the main AIs, X, the services
+**Version 1.1.1.** New in 1.1, beyond the web page: what is down on the internet (the main AIs, X, the services
 the internet stands on, your own line), your AI agents answer a click (their card, their window), Pip (a creature
 that lives on your wallpaper and whose needs are your machine's), four new worlds (`station`, `abyss`, `racks`,
 `moonbase`) and Mars on its own clock. See [New in 1.1](#new-in-11).
@@ -254,6 +254,9 @@ From the same state the web page reads:
 
 ## Changes
 
+- **1.1.1**: 1.1.0 as it was meant to be (its release has no binary: a test found that on a very small screen some
+  sizes of the server room went below their own minimum and stopped the program; now they cannot, and the test
+  tries a tiny screen too). If the painter of a world's picture ever stops, the wallpaper keeps going.
 - **1.1.0**: what is down on the internet (the main AIs, X, the services the internet stands on, your line); the
   agents' cards (their window, take them away); Pip; the worlds `station`, `abyss`, `racks`, `moonbase`; Mars on
   Jezero's clock with the light's delay, Phobos and Deimos, dust devils with your wind; the Mars ship flies away; a
