@@ -89,6 +89,7 @@ privacy, tuning and troubleshooting. The short version is in the [README](../REA
   [78. Describe your world (1.8)](#78-describe-your-world-18) ·
   [79. Monolith, a scene that comes with Pulse (1.8)](#79-monolith-a-scene-that-comes-with-pulse-18) ·
   [80. Mars, another world (1.8)](#80-mars-another-world-18)
+- pulse-native: [81. Pulse native, the same wallpaper in Rust (1.1)](#81-pulse-native-the-same-wallpaper-in-rust-11)
 - Creating scenes: with the mouse, [docs/EDITOR.md](EDITOR.md) (1.6); in code, [docs/SCENES.md](SCENES.md)
 
 ---
@@ -114,12 +115,21 @@ The second line makes it live. It installs what is missing (`python-gobject`, `g
 - it starts at every login (XDG autostart + a systemd user unit, `omarchy-pulse.service`);
 - it follows the theme: pick **pulse** and it starts, pick another theme and it stops (Omarchy's theme-set hook).
 
+On a PC (x86_64) it also asks once: **draw it natively?** Yes installs **pulse-native**, the same wallpaper drawn on
+the GPU in Rust, without a browser (lighter, smoother, and with the worlds only it has: section 81). It downloads a
+ready binary from the release and checks it before it runs; if it does not start on your machine, the web wallpaper
+takes over again by itself. No keeps the web wallpaper, as always (OmarchyTV always uses the web one). The answer
+is kept, and one command changes it whenever you like:
+
 | | |
 |---|---|
 | Live with every theme, in that theme's colours | `extras/install-live --always` |
 | Back to the pulse theme only | `extras/install-live --theme` |
 | Update | `omarchy-theme-install https://github.com/piermark/omarchy-pulse-theme` again, then `extras/install-live` |
 | Remove the live wallpaper (your `pulse.toml` stays) | `extras/install-live --remove` |
+| Draw it natively (pulse-native) / with the web page | `omarchy-pulse native on` / `omarchy-pulse native off` |
+| Answer the question beforehand | `extras/install-live --native` or `extras/install-live --web` |
+| Update pulse-native / which one draws | `omarchy-pulse native update` / `omarchy-pulse native status` |
 | Check dependencies, config and sources | `omarchy-pulse doctor` |
 | Logs | `journalctl --user -u omarchy-pulse -f` |
 | Restart | `systemctl --user restart omarchy-pulse` |
@@ -588,6 +598,8 @@ into `~/.config/omarchy-pulse/scenes/`, and what it saves is data, not code (sec
 |---|---|
 | Still a still wallpaper | `systemctl --user status omarchy-pulse`, `journalctl --user -u omarchy-pulse -e`, `omarchy-pulse doctor`. Is the theme **pulse** (or `--always` set)? Run `extras/install-live` from a terminal on the PC, not SSH. |
 | `missing dependencies` in the log | `extras/install-live` again (it installs them). |
+| "pulse-native did not start here" | the web wallpaper draws again by itself. `journalctl --user -u omarchy-pulse -e` says why; on Intel Ivy Bridge or Haswell OpenGL is chosen by itself; see [native/README.md](../native/README.md#why-it-may-not-start-or-look-wrong). `omarchy-pulse native on` tries again. |
+| pulse-native: "does not match SHA256SUMS" or "the signature does not match" | the download was damaged or is not the release's: nothing was installed. Try again later (`omarchy-pulse native on`). |
 | Slow on a laptop with two GPUs (a few frames a second) | `[pulse] gpu_prefer = "discrete"`: Pulse draws on the NVIDIA (PRIME offload) or AMD (`DRI_PRIME`) GPU; much faster when the integrated one struggles, more battery used. The log says `drawing on the discrete GPU`. |
 | Pink accents that are not in your theme | update to 1.5.2: Pulse now finds the theme in `~/.local/state/omarchy/current/theme` and `/usr/share/omarchy/themes`, and reads themes that name their colours (`magenta`, `cyan`...) instead of numbering them. |
 | Black or empty on NVIDIA | keep `dmabuf = "auto"` (Pulse turns WebKit's DMA-BUF renderer off on NVIDIA); also try `gpu = "never"`. |
@@ -1241,6 +1253,7 @@ generic one, of no brand.
 | `omarchy-pulse layout edit \| done \| reset` | move and hide the panels with the mouse (63) |
 | `omarchy-pulse theme from-wallpaper [PICTURE] NAME` | a new Omarchy theme from a picture (68) |
 | `omarchy-pulse news [read]` | the news to read before you update (66) |
+| `omarchy-pulse native on \| off \| update [--check] \| status` | pulse-native, the native renderer: install the checked release and draw with it, back to the web wallpaper, the newest release, what is installed (1, 81) |
 | `omarchy-pulse recap [DATE]` | your week in a minute (69) |
 | `omarchy-pulse fireworks [TEXT]` | fireworks (in the whole crew, too) |
 | `omarchy-pulse focus MINUTES [LABEL]` / `focus off` | focus mode; when it ends, a building in your city (28) |
@@ -2470,3 +2483,32 @@ still with `motion = "reduced"`. Click the dome: the last words say how it is dr
 
 The code is `extras/pulse/web/scenes/mars.js`, commented, to read or to start your own from
 (`omarchy-pulse scene lab mars`).
+
+---
+
+## 81. Pulse native, the same wallpaper in Rust (1.1)
+
+**pulse-native** draws Pulse on the GPU, in Rust with GPUI (the toolkit of the Zed editor), with no browser. It reads
+the same hub, token and `pulse.toml` as the web wallpaper, so sources, panels, alerts, agents, the editor's scenes
+and the voice stay as they are; only the drawing changes. Install it with `omarchy-pulse native on` (section 1); its
+own guide, every option and the changelog are in [native/README.md](../native/README.md).
+
+It draws everything Pulse 1.8 draws, and some things only it can:
+
+- **What is down on the internet.** The public status pages of the main AIs (ChatGPT, Claude, Gemini, xAI/Grok,
+  Copilot, Mistral, Perplexity, DeepSeek, Cursor, Groq, Hugging Face) and of what the internet stands on (X,
+  WhatsApp, Instagram, Facebook, Telegram, Microsoft 365, Azure, AWS, Google, Cloudflare, GitHub, Slack, Zoom,
+  Discord, Apple...), plus your own line: a line in the network panel, a panel and a dark hall in the datacenter
+  district when something goes down. Only public pages, every five minutes; `pulse-native --status-check` prints
+  them, `--status off` stops it, your own pages go in `~/.config/omarchy-pulse/status.txt`.
+- **Your AI agents answer a click**: their card (what they do, for how long, how their runs went), **its window**
+  (the terminal it runs in comes to the front, to give it the OK it waits for) and **take it away**.
+- **Pip**, a creature on the floor of every scene whose needs are real: food (updates waiting: feeding it opens
+  `omarchy-update`), health (alerts, a red CI, a service down), rest (the hour, the CPU, the heat), clean (the disk),
+  joy (your streak, the music, and you: a click pets it). `[pet] name = "..."` names it, `[pet] enabled = false` sends it away.
+- **Four more worlds** for `[pulse] scene`, painted pixel by pixel and every piece one of your data (click it):
+  `station` (the real Earth from orbit, as a rocket's camera sees it), `abyss` (an undersea base), `racks` (a whole
+  server room, the switches blinking with your traffic) and `moonbase` (the Earth in its real phase). The web
+  wallpaper does not have them: with it, these names draw the default scene.
+- **Mars on its own clock**: the real time at Jezero, Perseverance's sol, the light's delay from the Earth, Phobos
+  and Deimos at their real periods (`PULSE_MARS_SUN=earth` gives it your own day back).
