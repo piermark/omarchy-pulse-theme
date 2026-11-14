@@ -41,6 +41,8 @@ mod pet;
 mod status;
 mod worlds;
 mod worlds2;
+mod plate;
+mod plates;
 mod marstime;
 mod xf;
 

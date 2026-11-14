@@ -54,6 +54,8 @@ pub struct World {
     pub card: crate::agents::Card,
     /// pulse-native 1.1: what the new worlds keep
     pub w2: crate::worlds2::Mem,
+    /// pulse-native 1.1: their painted picture
+    pub plate: crate::plate::Holder,
     /// pulse-native: Pip, the creature of the wallpaper
     pub pet: crate::pet::Pet,
     pub card_note: std::sync::Arc<std::sync::Mutex<Option<String>>>,
@@ -196,7 +198,7 @@ impl World {
                 x += w + r.next() * 0.004;
             }
         }
-        World { city, last_t: 0.0, rockets: Default::default(), bursts: Vec::new(), say: None, seed: 42, rings: Vec::new(), more: Default::default(), code: Default::default(), inet_prev: Default::default(), card: Default::default(), w2: Default::default(), pet: Default::default(), card_note: Default::default(), labels: Vec::new(), hits: Vec::new(), centre: None, pointer: None, wall: false, has_cam: false, simple: false, last: None, beats: Vec::new(), heights: Vec::new(), audio: Vec::new(), tz: 0, prog: "face", alert_at: -1e9, view: None, sounds: Vec::new(), back: Default::default(), back_img: None, ball: Default::default(), ball_img: None, ball_at: -1e9, gaze: (0.0, 0.0), hm: String::new(), date_short: String::new(), typing: false, woke_at: -1e9, car_at: -1e9, cam: None, door: None, alert_env: 0.0, desk_empty: true, sky: Default::default(), floor: Default::default(), drones: Default::default(), focus_k: 0.0, band: (0.0, 0.0), heavens: Default::default(), street: Default::default(), overhead: Default::default(), pushed: Vec::new(), lively: true, motes: Vec::new(), weather: Default::default(), primary: true, git_flash: Default::default(), git_fail: Default::default(), git_pos: Vec::new(), noir: Default::default() }
+        World { city, last_t: 0.0, rockets: Default::default(), bursts: Vec::new(), say: None, seed: 42, rings: Vec::new(), more: Default::default(), code: Default::default(), inet_prev: Default::default(), card: Default::default(), w2: Default::default(), plate: Default::default(), pet: Default::default(), card_note: Default::default(), labels: Vec::new(), hits: Vec::new(), centre: None, pointer: None, wall: false, has_cam: false, simple: false, last: None, beats: Vec::new(), heights: Vec::new(), audio: Vec::new(), tz: 0, prog: "face", alert_at: -1e9, view: None, sounds: Vec::new(), back: Default::default(), back_img: None, ball: Default::default(), ball_img: None, ball_at: -1e9, gaze: (0.0, 0.0), hm: String::new(), date_short: String::new(), typing: false, woke_at: -1e9, car_at: -1e9, cam: None, door: None, alert_env: 0.0, desk_empty: true, sky: Default::default(), floor: Default::default(), drones: Default::default(), focus_k: 0.0, band: (0.0, 0.0), heavens: Default::default(), street: Default::default(), overhead: Default::default(), pushed: Vec::new(), lively: true, motes: Vec::new(), weather: Default::default(), primary: true, git_flash: Default::default(), git_fail: Default::default(), git_pos: Vec::new(), noir: Default::default() }
     }
 }
 
@@ -430,7 +432,23 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
     world.last = Some(frame);
     if own {
         // one of the new worlds: it draws its whole picture; then what goes over every scene
-        crate::worlds2::paint(kind, win, st, pal, &frame, &mut world.w2, t, world.tz, &mut world.labels, &mut world.hits);
+        // the picture, painted on its own thread (the old one stays until the new one is ready)
+        let sf = win.scale_factor().clamp(1.0, 3.0);
+        let ask = crate::worlds2::plate_ask(kind, st, pal, (w * sf).round() as u32, (h * sf).round() as u32, sf, world.tz);
+        world.plate.update(ask);
+        for old in world.plate.stale.drain(..) {
+            let _ = win.drop_image(old);
+        }
+        match &world.plate.img {
+            Some(im) => {
+                let at = Bounds::new(point(px(ox), px(oy)), size(px(w), px(h)));
+                let _ = win.paint_image(at, at, gpui::Corners::default(), 0.0, im.clone(), 0, false);
+            }
+            None => rect(win, ox, oy, w, h, [0.01, 0.015, 0.03], 1.0),
+        }
+        let anchors = std::mem::take(&mut world.plate.anchors);
+        crate::worlds2::paint(kind, win, st, pal, &frame, &mut world.w2, t, world.tz, &anchors, &mut world.labels, &mut world.hits);
+        world.plate.anchors = anchors;
         for (k, words) in crate::status::changes(&mut world.inet_prev, st) {
             world.fx(&k, &words, false, t);
         }
