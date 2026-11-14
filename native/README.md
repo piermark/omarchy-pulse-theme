@@ -1,10 +1,15 @@
-# pulse-native 1.0: Omarchy Pulse in Rust + GPUI
+# pulse-native 1.1: Omarchy Pulse in Rust + GPUI
 
 A parallel renderer for Omarchy Pulse. The web page stays the default (and is what runs on OmarchyTV); this one
 paints the same wallpaper natively on the GPU, with no browser underneath. It reads the same hub: the same
 `omarchy-pulse` service, the same token and the same `pulse.toml`.
 
-**Version 1.0.3.** A complete renderer of Pulse 1.8 beside the web page, which stays (and is what runs on
+**Version 1.1.0.** New in 1.1, beyond the web page: what is down on the internet (the main AIs, X, the services
+the internet stands on, your own line), your AI agents answer a click (their card, their window), Pip (a creature
+that lives on your wallpaper and whose needs are your machine's), four new worlds (`station`, `abyss`, `racks`,
+`moonbase`) and Mars on its own clock. See [New in 1.1](#new-in-11).
+
+A complete renderer of Pulse 1.8 beside the web page, which stays (and is what runs on
 OmarchyTV): you choose which one draws your wallpaper, and go back with one command. It is a line-by-line
 translation of the published Pulse 1.8 (`pulse.js` and `pulse.css`), so that it looks and moves the same, and a
 little more like a game where the web page cannot: lights that burn white at their core (the canvas's "lighter"
@@ -59,7 +64,7 @@ cd ~/pulse-native && git pull && cd native && cargo build --release && ./install
 | | |
 |---|---|
 | `--window` | an ordinary window instead of the wallpaper |
-| `--scene S` | `skyline`, `sphere`, `orbit`, `calm`, `hacker`, `noir`, `mars`, `monolith`, `pond`, `city`; by default the hub's `[pulse] scene` |
+| `--scene S` | `skyline`, `sphere`, `orbit`, `calm`, `hacker`, `noir`, `mars`, `monolith`, `pond`, `city`, and pulse-native's own `station`, `abyss`, `racks`, `moonbase`; by default the hub's `[pulse] scene` |
 | `--fps N` | the most frames a second, 5 to 60 (default: the hub's `[pulse] fps`, else 20) |
 | `--cpu N` | the most of one core it may use, in percent (also `PULSE_CPU`); by default 15 on a laptop, 25 on a desktop, up to twice that on a big screen (the square root of its pixels over 1080p's) |
 | `--calm N` | frames a second when nothing fast moves (also `PULSE_CALM_FPS`); by default 10 on a laptop, 20 on a desktop |
@@ -67,6 +72,10 @@ cd ~/pulse-native && git pull && cd native && cargo build --release && ./install
 | `--gpu G` | `auto` (default), `gl` or `vulkan` (also `PULSE_GPU`): `auto` draws with OpenGL on Intel Ivy Bridge and Haswell |
 | `--url URL` | the hub (default `http://127.0.0.1:` + `PULSE_PORT` or `[pulse] port`) |
 | `--font NAME` | the font (default: `[pulse] font`, else CaskaydiaMono Nerd Font) |
+| `--status off` | do not read the status pages (also `PULSE_STATUS=off`); by default they are read every five minutes |
+| `--status-check` | read every status page now, print what each one says, and exit |
+| `PULSE_PET=off` | no Pip (or `[pet] enabled = false` in pulse.toml; `[pet] name = "..."` names it) |
+| `PULSE_MARS_SUN=earth` | Mars's Sun follows your own day instead of Jezero's |
 | `--version` | print the version |
 | `PULSE_PERF=1` | print every five seconds what each part of a frame costs |
 
@@ -100,6 +109,52 @@ pids=$(pgrep -f 'omarchy-pulse|pulse-native|WebKitWebProcess|WebKitGPUProcess|We
 t() { for p in $pids; do awk '{s+=$14+$15} END{print s}' /proc/$p/stat; done | awk '{s+=$1} END{print s}'; }
 a=$(t); sleep 60; b=$(t); echo "CPU $(( (b-a) * 100 / 60 / $(getconf CLK_TCK) ))% of a core"
 ```
+
+## New in 1.1
+
+- **What is down on the internet.** The public status pages of the main AIs (ChatGPT, Claude, Gemini, xAI/Grok,
+  GitHub Copilot, Mistral, Perplexity, DeepSeek, Cursor, Groq, Hugging Face) and of what the internet and your work
+  stand on (X and its API, WhatsApp, Instagram, Facebook, Telegram, Microsoft 365, Azure, AWS, Google Cloud and
+  Workspace, Cloudflare, Akamai, GitHub, GitLab, Slack, Zoom, Discord, Atlassian, Apple, Dropbox), plus your own
+  line (the router, DNS, the way out), so you can tell whether the fault is theirs or yours. The network panel has
+  a line for it ("31 up · 14 ms", or "Microsoft 365 down +1"); when something goes down a panel appears on the
+  right, a hall of the datacenter district goes dark with a bolt, and every world shows it its own way. Sites with
+  no status page (X, WhatsApp...) are asked directly, and count only when the status pages answer (so a closed
+  network is not "everything down"). Only public pages are read, with no account and nothing about you, every five
+  minutes (two while something is down); `--status off` stops it. Your own pages go in
+  `~/.config/omarchy-pulse/status.txt`, one per line: `Name  https://status.example.com` (a Statuspage, Instatus
+  or incident.io page, or an RSS/Atom feed), `-Name` hides one of ours, `-*` all of ours.
+  `pulse-native --status-check` prints what every page says.
+- **Your AI agents answer a click.** A click on a drone (a rover on Mars, an astronaut, a submarine...) opens its
+  card: what it is doing, for how long, how its runs went. **↗ its window** brings the terminal it runs in to the
+  front (Hyprland's window whose title names it, and its repo when there are several): the place to give it the OK
+  it waits for. **✓ take it away** removes it from Pulse. Pulse never types for an agent.
+- **Pip**, a creature that lives on the floor of every scene, a tamagotchi whose needs are real: food (the updates
+  waiting: feeding it opens `omarchy-update` in a terminal, where you confirm it as always), health (alerts, a red
+  CI, a service down, a certificate about to expire, a container restarting), rest (it sleeps when you are away,
+  yawns at 2 in the morning, wilts with the CPU at full load or a hot machine), clean (the disk: flies past 80%),
+  joy (your days with Pulse and their streak, the music, your agents' work done, and you: a click pets it). It
+  looks at the pointer, grows with your days (a second antenna after a month), wears a helmet on Mars and in
+  space. A click opens its card with the five needs and why.
+- **Four new worlds**, each linked to as much of your world as it can hold; a click on any piece says what it is:
+  - `station`: an orbital station over the real Earth (your day and night, your clouds, the aurora with Kp, the
+    ISS, the Starlink train, real launches climbing from the limb). The modules are your repos (CI is their
+    light), a cargo ship docks for every commit, the deploy builds a new module, the solar wings are your roof's
+    power, the dish's beam is your network down and up, the agents are astronauts on a spacewalk, a service down
+    blacks out a region of the Earth.
+  - `abyss`: an undersea base. The cables on the sea floor are your network (a service down breaks one), the
+    buoys your network's devices, the domes your repos, the submarines your agents, the fish swim as fast as your
+    CPU works, the sonar pings as fast as your line answers, the ships on the surface are the planes over you.
+  - `racks`: a server room. A rack for each core blinking with its load, the cable trays carrying your traffic,
+    the console with RAM, disk, temperature and the deploy, the services down as red servers, technicians for
+    agents; the aisle warms up with your machine.
+  - `moonbase`: the Earth in its real phase over the Moon, the laser link to it (1.28 light seconds) carrying your
+    network, domes for repos, rovers for agents, a lander that flies with Earth's real launches.
+- **Mars on its own clock**: the Sun follows the real time at Jezero crater, where Perseverance is (Mars24's
+  algorithm), with Perseverance's sol and the light's delay from the Earth (from 3 to 22 minutes); Phobos and Deimos
+  cross the sky with their real periods; the dust devils travel with your wind. The big ship lifts off with Earth's
+  real launch, climbs and leaves; ten minutes later the next one has rolled out.
+- **The wallpaper** sits on the layer-shell `bottom` layer (1.0.3).
 
 ## What it draws
 
@@ -165,6 +220,10 @@ From the same state the web page reads:
 
 ## Changes
 
+- **1.1.0**: what is down on the internet (the main AIs, X, the services the internet stands on, your line); the
+  agents' cards (their window, take them away); Pip; the worlds `station`, `abyss`, `racks`, `moonbase`; Mars on
+  Jezero's clock with the light's delay, Phobos and Deimos, dust devils with your wind; the Mars ship flies away; a
+  press that arrived twice counts once.
 - **1.0.3**: the wallpaper sits on the layer-shell `bottom` layer, above the still background that newer Omarchy
   draws from its shell (at login it could cover Pulse) and still under every window; `--layer background` or
   `PULSE_LAYER=background` go back to the old layer.

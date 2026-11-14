@@ -1,6 +1,6 @@
 # Omarchy Pulse — a live wallpaper for Omarchy
 
-**Version 1.8** · **new: [Pulse native 1.0](#pulse-native-10-the-same-wallpaper-in-rust)**, drawn on the GPU without a browser · [what's new](#new-in-18) · [try it in ten minutes](#try-18-in-ten-minutes) · [the scene editor](docs/EDITOR.md) · [share and install scenes](docs/PACKAGES.md) · [create a scene](docs/SCENES.md) · [the guide](docs/GUIDE.md) · [every command](docs/GUIDE.md#36-every-command)
+**Version 1.8** · **new: [Pulse native 1.1](#pulse-native-11-the-same-wallpaper-in-rust)**, drawn on the GPU without a browser · [what's new](#new-in-18) · [try it in ten minutes](#try-18-in-ten-minutes) · [the scene editor](docs/EDITOR.md) · [share and install scenes](docs/PACKAGES.md) · [create a scene](docs/SCENES.md) · [the guide](docs/GUIDE.md) · [every command](docs/GUIDE.md#36-every-command)
 
 ![Omarchy Pulse 1.5: the noir scene, a futuristic megacity at night with the agent's face on the big screen, candles for what expires, the energy river, robots on the floor (demo data)](preview.png)
 
@@ -60,7 +60,7 @@ or anything you push from a script. Camera feeds, AI briefs, Home Assistant, ser
 Made for **Omarchy 4.5**. By [Marco Porro](https://x.com/MarcoPorro), the author of
 [OmarchyTV](https://github.com/piermark/omarchytv) (the Live screen of OmarchyTV, now on your desktop).
 
-## Pulse native 1.0: the same wallpaper, in Rust
+## Pulse native 1.1: the same wallpaper, in Rust
 
 **pulse-native** draws Pulse 1.8 natively on the GPU, in Rust with [GPUI](https://github.com/gpui-ce/gpui-ce)
 (the toolkit of the Zed editor), with no browser underneath. It reads the same hub, the same token and the same
@@ -71,6 +71,11 @@ runs on OmarchyTV: you choose which one draws your desktop, and go back with one
 - **The same Pulse 1.8**, translated line by line from `pulse.js` and `pulse.css`: every scene (`sphere`, `skyline`,
   `orbit`, `calm`, `hacker`, `noir`, `mars`, `monolith`, `pond`), the scene editor's and the community's `.pulse`
   scenes, the real sky, the weather, the city and its life, Pulse Net, the panels, layout edit.
+- **New in 1.1, only in pulse-native**: what is down on the internet (the main AIs, X, Microsoft 365, AWS,
+  Cloudflare, GitHub... and your own line); your AI agents answer a click (their card, and their terminal brought
+  to the front); Pip, a tamagotchi whose needs are your machine's real ones (updates, alerts, CPU, disk, your
+  streak); four new worlds, `station`, `abyss`, `racks` and `moonbase`; Mars on Jezero's real clock. See
+  [native/README.md](native/README.md#new-in-11).
 - **More of a game** where a browser cannot: lights that burn white at their core, the Sun's starburst and lens flare,
   the sphere's light turning in the wet air, LEDs that glide; your city's landmarks lit from where the Sun or the
   Moon really is, floodlit at night (the Statue of Liberty in New York, Christ the Redeemer in Rio, and more
