@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 pub const DEFAULT_PORT: u16 = 47800;
 /// Pulse's own scenes; any other name is a scene of yours (the editor's, the community's, or one in code).
-pub const BUILTIN: [&str; 10] = ["sphere", "skyline", "orbit", "calm", "hacker", "noir", "city", "mars", "monolith", "pond"];
+pub const BUILTIN: [&str; 14] = ["sphere", "skyline", "orbit", "calm", "hacker", "noir", "city", "mars", "monolith", "pond", "station", "abyss", "racks", "moonbase"];
 
 /// What the hub said last, and when.
 #[derive(Clone, Default)]

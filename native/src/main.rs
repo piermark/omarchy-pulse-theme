@@ -40,6 +40,8 @@ mod agents;
 mod pet;
 mod status;
 mod worlds;
+mod worlds2;
+mod marstime;
 mod xf;
 
 use gpui::{
@@ -1137,7 +1139,7 @@ fn args() -> Args {
             _ => {
                 println!("pulse-native {}: Omarchy Pulse, drawn natively (Rust + GPUI)\n\n  pulse-native            the wallpaper (a Wayland layer-shell surface behind your windows)\n  pulse-native --window   an ordinary window\n  --url URL   the hub (default: http://127.0.0.1:PORT from PULSE_PORT or pulse.toml)\n  --fps N     frames a second, 5 to 60 (default: the hub's [pulse] fps)\n  --cpu N     at most N% of one core (default 15 on a laptop, 25 on a desktop, up to twice that on a big screen; PULSE_CPU too): fewer frames a second when they cost more\n  --calm N    frames a second for a calm scene (default 10 on a laptop, 20 on a desktop; PULSE_CALM_FPS)\n  --status off  no status pages (by default the public status pages of the main services and AIs are read every 5 minutes; PULSE_STATUS)
   --status-check  read them now, print what they say, and exit
-  --layer L   bottom (default: over Omarchy's own still background) or background (PULSE_LAYER)\n  --gpu G     vulkan, gl or auto (default; PULSE_GPU too): auto takes OpenGL on Ivy Bridge and Haswell\n  --font NAME the font (default: {FONT})\n  --scene S   the scene: by default the hub's own ([pulse] scene); skyline, sphere, or city (pulse-native's first world)", env!("CARGO_PKG_VERSION"));
+  --layer L   bottom (default: over Omarchy's own still background) or background (PULSE_LAYER)\n  --gpu G     vulkan, gl or auto (default; PULSE_GPU too): auto takes OpenGL on Ivy Bridge and Haswell\n  --font NAME the font (default: {FONT})\n  --scene S   the scene: by default the hub's own ([pulse] scene); skyline, sphere, orbit, calm, hacker, noir, mars, monolith, pond, city; and pulse-native's own: station, abyss, racks, moonbase", env!("CARGO_PKG_VERSION"));
                 std::process::exit(if x == "--help" || x == "-h" { 0 } else { 2 });
             }
         }

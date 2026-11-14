@@ -219,26 +219,26 @@ fn cl(v: f32) -> f32 {
 }
 
 /// The painter, in the scene's own coordinates (0,0 = the top left of the wallpaper).
-struct G<'a> {
-    win: &'a mut Window,
-    ox: f32,
-    oy: f32,
+pub(crate) struct G<'a> {
+    pub(crate) win: &'a mut Window,
+    pub(crate) ox: f32,
+    pub(crate) oy: f32,
 }
 impl G<'_> {
-    fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, c: C, a: f32) { crate::scene::rect(self.win, self.ox + x, self.oy + y, w, h, c, a) }
-    fn grad(&mut self, x: f32, y: f32, w: f32, h: f32, top: C, ta: f32, bot: C, ba: f32) { if w > 0.0 && h > 0.0 { crate::scene::gradient(self.win, self.ox + x, self.oy + y, w, h, top, ta, bot, ba) } }
-    fn glow(&mut self, x: f32, y: f32, r: f32, c: C, a: f32) { if a > 0.01 && r > 0.0 { crate::scene::glow(self.win, self.ox + x, self.oy + y, r, c, a.min(1.0)) } }
-    fn disc(&mut self, x: f32, y: f32, r: f32, c: C, a: f32) { crate::scene::disc(self.win, self.ox + x, self.oy + y, r, c, a) }
-    fn ell(&mut self, x: f32, y: f32, rx: f32, ry: f32, c: C, a: f32) { crate::draw::ellipse(self.win, self.ox + x, self.oy + y, rx, ry, c, a) }
+    pub(crate) fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, c: C, a: f32) { crate::scene::rect(self.win, self.ox + x, self.oy + y, w, h, c, a) }
+    pub(crate) fn grad(&mut self, x: f32, y: f32, w: f32, h: f32, top: C, ta: f32, bot: C, ba: f32) { if w > 0.0 && h > 0.0 { crate::scene::gradient(self.win, self.ox + x, self.oy + y, w, h, top, ta, bot, ba) } }
+    pub(crate) fn glow(&mut self, x: f32, y: f32, r: f32, c: C, a: f32) { if a > 0.01 && r > 0.0 { crate::scene::glow(self.win, self.ox + x, self.oy + y, r, c, a.min(1.0)) } }
+    pub(crate) fn disc(&mut self, x: f32, y: f32, r: f32, c: C, a: f32) { crate::scene::disc(self.win, self.ox + x, self.oy + y, r, c, a) }
+    pub(crate) fn ell(&mut self, x: f32, y: f32, rx: f32, ry: f32, c: C, a: f32) { crate::draw::ellipse(self.win, self.ox + x, self.oy + y, rx, ry, c, a) }
     #[allow(clippy::too_many_arguments)]
-    fn arcf(&mut self, x: f32, y: f32, rx: f32, ry: f32, rot: f32, a0: f32, a1: f32, c: C, a: f32) { crate::draw::arc_fill(self.win, self.ox + x, self.oy + y, rx, ry, rot, a0, a1, c, a) }
+    pub(crate) fn arcf(&mut self, x: f32, y: f32, rx: f32, ry: f32, rot: f32, a0: f32, a1: f32, c: C, a: f32) { crate::draw::arc_fill(self.win, self.ox + x, self.oy + y, rx, ry, rot, a0, a1, c, a) }
     #[allow(clippy::too_many_arguments)]
-    fn arc(&mut self, x: f32, y: f32, rx: f32, ry: f32, a0: f32, a1: f32, lw: f32, c: C, a: f32) { crate::draw::arc(self.win, self.ox + x, self.oy + y, rx, ry, a0, a1, lw, c, a) }
-    fn poly(&mut self, pts: &[(f32, f32)], c: C, a: f32) { let p: Vec<(f32, f32)> = pts.iter().map(|p| (p.0 + self.ox, p.1 + self.oy)).collect(); crate::draw::poly(self.win, &p, c, a) }
-    fn line(&mut self, pts: &[(f32, f32)], lw: f32, c: C, a: f32) { let p: Vec<(f32, f32)> = pts.iter().map(|p| (p.0 + self.ox, p.1 + self.oy)).collect(); crate::draw::line(self.win, &p, lw, c, a) }
+    pub(crate) fn arc(&mut self, x: f32, y: f32, rx: f32, ry: f32, a0: f32, a1: f32, lw: f32, c: C, a: f32) { crate::draw::arc(self.win, self.ox + x, self.oy + y, rx, ry, a0, a1, lw, c, a) }
+    pub(crate) fn poly(&mut self, pts: &[(f32, f32)], c: C, a: f32) { let p: Vec<(f32, f32)> = pts.iter().map(|p| (p.0 + self.ox, p.1 + self.oy)).collect(); crate::draw::poly(self.win, &p, c, a) }
+    pub(crate) fn line(&mut self, pts: &[(f32, f32)], lw: f32, c: C, a: f32) { let p: Vec<(f32, f32)> = pts.iter().map(|p| (p.0 + self.ox, p.1 + self.oy)).collect(); crate::draw::line(self.win, &p, lw, c, a) }
 }
 
-fn label(labels: &mut Vec<Label>, x: f32, y: f32, size: f32, c: C, a: f32, text: String, bold: bool) {
+pub(crate) fn label(labels: &mut Vec<Label>, x: f32, y: f32, size: f32, c: C, a: f32, text: String, bold: bool) {
     if !text.is_empty() && a > 0.02 {
         labels.push(Label { x, y, size, c, a, text, bold });
     }
@@ -274,8 +274,12 @@ pub fn mars(win: &mut Window, sv: &Value, f: &Frame, mem: &mut Mem, t: f64, labe
     let quiet = if get(sv, &["meeting"]).as_bool().unwrap_or(false) || get(sv, &["away"]).as_bool().unwrap_or(false) { 0.55 } else { 1.0 };
     let hour = num(sv, &["time", "hour"]).unwrap_or(12.0) as f32;
     let cx = w / 2.0;
-    // ---- the hour is yours: the Sun's real height decides day, the blue twilight, night
-    let el = num(sv, &["space", "sun"]).map(|v| v as f32).unwrap_or(if (7.0..19.0).contains(&hour) { 35.0 } else { -30.0 });
+    // ---- pulse-native 1.1: the hour is Mars's own, at Jezero where Perseverance is: the Sun's real height there
+    // decides day, the blue twilight, night (PULSE_MARS_SUN=earth: your own Sun, as before)
+    let mclock = crate::marstime::at(if now > 0.0 { now } else { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0) });
+    let earth_sun = std::env::var("PULSE_MARS_SUN").map(|v| v == "earth").unwrap_or(false);
+    let el = if earth_sun { num(sv, &["space", "sun"]).map(|v| v as f32).unwrap_or(if (7.0..19.0).contains(&hour) { 35.0 } else { -30.0 }) } else { mclock.sun_el as f32 };
+    let delay = crate::marstime::light_delay(if now > 0.0 { now } else { 1.8e9 });
     let (wd, wn) = (cl((el + 2.0) / 12.0), cl((-el - 4.0) / 10.0));
     let wt = (1.0 - wd - wn).max(0.0);
     let sky3 = |d: C, tw: C, n: C| -> C { [d[0] * wd + tw[0] * wt + n[0] * wn, d[1] * wd + tw[1] * wt + n[1] * wn, d[2] * wd + tw[2] * wt + n[2] * wn] };
@@ -299,13 +303,26 @@ pub fn mars(win: &mut Window, sv: &Value, f: &Frame, mem: &mut Mem, t: f64, labe
         g.disc(ex, ey, (u * 1.9).max(1.2), c8(210, 232, 255), wn);
         g.rect(ex + u * 7.0, ey - u * 3.0, (u * 1.2).max(1.0), (u * 1.2).max(1.0), c8(220, 220, 215), 0.8 * wn);
         label(labels, ex + u * 30.0, ey - u * 6.0, h * 0.0095, c8(200, 220, 245), 0.5 * wn, "Earth".into(), false);
-        hits.push(Hit { x: ex, y: ey, r: h * 0.02, text: "Earth · the star you came from".into() });
-        let ph = (tt * 0.0035).rem_euclid(1.0); // Phobos is fast, and rises in the west
-        let (px, py) = (w * (0.3 + ph * 0.4), hz * (0.74 - 0.07 * (ph * PI).sin()));
-        g.arcf(px, py, u * 5.5, u * 4.2, 0.5, 0.0, TAU, c8(196, 180, 164), wn);
-        g.disc(px - u * 1.5, py - u, u * 1.4, c8(120, 108, 98), wn);
-        g.disc(w * 0.41, hz * 0.69, (u * 1.6).max(1.2), c8(226, 214, 200), wn); // Deimos
-        hits.push(Hit { x: px, y: py, r: h * 0.02, text: "Phobos · crosses the sky in four hours".into() });
+        hits.push(Hit { x: ex, y: ey, r: h * 0.02, text: format!("Earth · the star you came from: its light, and your messages, take {} to get here", crate::marstime::delay_words(delay)) });
+        // pulse-native 1.1: Phobos and Deimos where they really are in Jezero's sky. Phobos goes round faster than
+        // Mars turns: it rises in the west every 11 h 06 m and crosses in about four hours; Deimos rises in the east
+        // and takes two and a half days to cross
+        let hours = now / 3600.0;
+        let pp = ((hours / 11.1) + 0.37).rem_euclid(1.0) as f32;
+        if pp < 0.38 {
+            let k = pp / 0.38; // from the west (the right) to the east (the left)
+            let (px, py) = (w * (0.86 - 0.72 * k), hz * (0.78 - 0.5 * (k * PI).sin()));
+            g.arcf(px, py, u * 5.5, u * 4.2, 0.5, 0.0, TAU, c8(196, 180, 164), wn.max(0.25));
+            g.disc(px - u * 1.5, py - u, u * 1.4, c8(120, 108, 98), wn.max(0.25));
+            hits.push(Hit { x: px, y: py, r: h * 0.02, text: "Phobos · it rises in the west twice a sol, and crosses in four hours".into() });
+        }
+        let dp = ((hours / 131.4) + 0.21).rem_euclid(1.0) as f32;
+        if dp < 0.5 {
+            let k = dp / 0.5; // from the east (the left) to the west
+            let (dx, dy) = (w * (0.14 + 0.72 * k), hz * (0.8 - 0.55 * (k * PI).sin()));
+            g.disc(dx, dy, (u * 1.6).max(1.2), c8(226, 214, 200), wn.max(0.2));
+            hits.push(Hit { x: dx, y: dy, r: h * 0.02, text: "Deimos · it takes two and a half sols to cross the sky".into() });
+        }
         if !still {
             if mem.met.is_none() && mem.r.next() < 0.0015 {
                 mem.met = Some((w * (0.3 + mem.r.next() * 0.4), hz * (0.1 + mem.r.next() * 0.3), t));
@@ -325,7 +342,7 @@ pub fn mars(win: &mut Window, sv: &Value, f: &Frame, mem: &mut Mem, t: f64, labe
     }
     if el > -6.0 {
         // the Sun: small, and blue around it when it is low
-        let hr = hour + num(sv, &["time", "minute"]).unwrap_or(0.0) as f32 / 60.0;
+        let hr = if earth_sun { hour + num(sv, &["time", "minute"]).unwrap_or(0.0) as f32 / 60.0 } else { mclock.ltst as f32 };
         let (sx, sy) = (w * (0.31 + 0.38 * cl((hr - 5.0) / 14.0)), hz - (el.max(-6.0) * 0.01745).sin() * hz * 0.82);
         let low = cl(1.0 - el / 22.0);
         g.glow(sx, sy, h * 0.30, c8(96, 150, 232), 0.55 * low * (1.0 - wn));
@@ -387,9 +404,19 @@ pub fn mars(win: &mut Window, sv: &Value, f: &Frame, mem: &mut Mem, t: f64, labe
         g.poly(&[(x0 + mw * 0.55, hz + 1.0), (x0 + mw * 0.6, hz - mh * 0.9), (x0 + mw - sl * 0.4, hz - mh * (0.85 + 0.15 * m[3])), (x0 + mw + sl, hz + 1.0)], mix(lit(DEEP, 1.0), hor, 0.3), 0.55);
     }
     let wind = num(sv, &["weather", "wind"]).unwrap_or(0.0) as f32; // your wind raises dust devils, far away
+    // they travel with your wind: its direction (east is on the left) and its speed
+    let wdir = num(sv, &["weather", "windDir"]).unwrap_or(270.0) as f32;
+    let drift = -(wdir + 180.0).to_radians().sin() * (0.002 + wind / 6000.0);
     let n_dev = if still { 0 } else if wind > 35.0 { 2 } else if wind > 14.0 { 1 } else { 0 };
+    // the Martian clock, where Perseverance is
+    if !earth_sun {
+        let (hh, mm) = (mclock.lmst as i64, ((mclock.lmst.fract()) * 60.0) as i64);
+        let words = format!("Jezero · sol {} · {hh:02}:{mm:02} · light from Earth {}", mclock.sol, crate::marstime::delay_words(delay));
+        label(labels, w * 0.5, h * 0.465, h * 0.0115, ink, 0.7 * quiet, words.clone(), false);
+        hits.push(Hit { x: w * 0.5, y: h * 0.46, r: h * 0.02, text: format!("{words} · it is Mars's own time at Jezero, where Perseverance is (season Ls {:.0}°)", mclock.ls) });
+    }
     for i in 0..n_dev {
-        let dvx = (mem.devil[i] + tt * 0.004 * if i > 0 { -1.0 } else { 1.0 }).rem_euclid(1.0);
+        let dvx = (mem.devil[i] + tt * drift * if i > 0 { 0.7 } else { 1.0 }).rem_euclid(1.0);
         let (dx0, dh) = (w * (0.28 + 0.44 * dvx), h * (0.07 + 0.03 * i as f32));
         for k in 0..9 {
             let kk = k as f32 / 8.0;

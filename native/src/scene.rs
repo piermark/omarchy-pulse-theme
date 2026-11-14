@@ -52,6 +52,8 @@ pub struct World {
     pub inet_prev: std::collections::HashMap<String, String>,
     /// pulse-native: the card of the agent you clicked, and the answer of its last button
     pub card: crate::agents::Card,
+    /// pulse-native 1.1: what the new worlds keep
+    pub w2: crate::worlds2::Mem,
     /// pulse-native: Pip, the creature of the wallpaper
     pub pet: crate::pet::Pet,
     pub card_note: std::sync::Arc<std::sync::Mutex<Option<String>>>,
@@ -143,6 +145,12 @@ impl World {
     /// The same, with everything the hub said about it (an earthquake's magnitude and direction).
     pub fn fx_raw(&mut self, kind: &str, text: &str, small: bool, t: f64, raw: &Value) {
         crate::extra::event(&mut self.more, kind, raw, t, self.last.as_ref());
+        if matches!(kind, "commit" | "push" | "deploy") {
+            self.w2.events.push((kind.to_string(), text.to_string(), t));
+            if self.w2.events.len() > 16 {
+                self.w2.events.remove(0);
+            }
+        }
         if kind == "commit" || kind == "push" {
             // pulse.js: the repo's tower flashes and a new floor comes down
             let name = text.split(" · ").next().unwrap_or("").to_string();
@@ -188,7 +196,7 @@ impl World {
                 x += w + r.next() * 0.004;
             }
         }
-        World { city, last_t: 0.0, rockets: Default::default(), bursts: Vec::new(), say: None, seed: 42, rings: Vec::new(), more: Default::default(), code: Default::default(), inet_prev: Default::default(), card: Default::default(), pet: Default::default(), card_note: Default::default(), labels: Vec::new(), hits: Vec::new(), centre: None, pointer: None, wall: false, has_cam: false, simple: false, last: None, beats: Vec::new(), heights: Vec::new(), audio: Vec::new(), tz: 0, prog: "face", alert_at: -1e9, view: None, sounds: Vec::new(), back: Default::default(), back_img: None, ball: Default::default(), ball_img: None, ball_at: -1e9, gaze: (0.0, 0.0), hm: String::new(), date_short: String::new(), typing: false, woke_at: -1e9, car_at: -1e9, cam: None, door: None, alert_env: 0.0, desk_empty: true, sky: Default::default(), floor: Default::default(), drones: Default::default(), focus_k: 0.0, band: (0.0, 0.0), heavens: Default::default(), street: Default::default(), overhead: Default::default(), pushed: Vec::new(), lively: true, motes: Vec::new(), weather: Default::default(), primary: true, git_flash: Default::default(), git_fail: Default::default(), git_pos: Vec::new(), noir: Default::default() }
+        World { city, last_t: 0.0, rockets: Default::default(), bursts: Vec::new(), say: None, seed: 42, rings: Vec::new(), more: Default::default(), code: Default::default(), inet_prev: Default::default(), card: Default::default(), w2: Default::default(), pet: Default::default(), card_note: Default::default(), labels: Vec::new(), hits: Vec::new(), centre: None, pointer: None, wall: false, has_cam: false, simple: false, last: None, beats: Vec::new(), heights: Vec::new(), audio: Vec::new(), tz: 0, prog: "face", alert_at: -1e9, view: None, sounds: Vec::new(), back: Default::default(), back_img: None, ball: Default::default(), ball_img: None, ball_at: -1e9, gaze: (0.0, 0.0), hm: String::new(), date_short: String::new(), typing: false, woke_at: -1e9, car_at: -1e9, cam: None, door: None, alert_env: 0.0, desk_empty: true, sky: Default::default(), floor: Default::default(), drones: Default::default(), focus_k: 0.0, band: (0.0, 0.0), heavens: Default::default(), street: Default::default(), overhead: Default::default(), pushed: Vec::new(), lively: true, motes: Vec::new(), weather: Default::default(), primary: true, git_flash: Default::default(), git_fail: Default::default(), git_pos: Vec::new(), noir: Default::default() }
     }
 }
 
@@ -340,6 +348,7 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
     let sphere = kind == "sphere";
     let (orbit, calm, hacker, noir) = (kind == "orbit", kind == "calm", kind == "hacker", kind == "noir");
     let (mars, monolith, pond) = (kind == "mars", kind == "monolith", kind == "pond");
+    let own = crate::worlds2::is_world(kind); // pulse-native 1.1: station, abyss, racks, moonbase draw all of it
     let wall = world.wall;
     let simple = world.simple;
     let bare = bare || orbit || mars || monolith || pond || wall; // (noir keeps pulse.js's git, cars, robots: its own centre is the board) // no near towers, no dome, no city life: the scene draws its own centre
@@ -378,7 +387,7 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
     let over = cloud * 0.35; // an overcast sky is greyer
     let (top, midc, low) = (mix(mx(0), grey, over * 0.6), mix(mx(1), grey, over), mix(mx(2), grey, over * 0.8));
     // what never moves comes from one picture, painted as pulse.js paints it and only when something changes
-    let use_back = !wall && !mars && !pond && kind != "city"; // (noir too: its megacity is in the picture)
+    let use_back = !wall && !mars && !pond && !own && kind != "city"; // (noir too: its megacity is in the picture)
     if use_back {
         let sf = win.scale_factor().clamp(1.0, 3.0); // the screen's own pixels, also at a scale over 2
         let rem = crate::ui::rem(w, h);
@@ -412,11 +421,36 @@ pub fn paint(bounds: Bounds<Pixels>, world: &mut World, st: &Value, pal: &Pal, t
     lap.mark("backdrop");
     // ---- pulse.js draw(): the faint stars, the real Sun (the rays and the real stars and the Moon follow)
     let sky_on = !wall;
-    world.heavens.back(win, cx, font, st, pal, ox, oy, w, h, tf, wall);
+    if !own {
+        world.heavens.back(win, cx, font, st, pal, ox, oy, w, h, tf, wall);
+    }
 
     lap.mark("heavens-back");
     let frame = crate::life::Frame { w, h, ox, oy, hz, u, t: tf, sky: [wn, wt, wd] };
     world.last = Some(frame);
+    if own {
+        // one of the new worlds: it draws its whole picture; then what goes over every scene
+        crate::worlds2::paint(kind, win, st, pal, &frame, &mut world.w2, t, world.tz, &mut world.labels, &mut world.hits);
+        for (k, words) in crate::status::changes(&mut world.inet_prev, st) {
+            world.fx(&k, &words, false, t);
+        }
+        world.overhead.draw_fireworks(win, pal, ox, oy, w, h, t, (ox + w * 0.2, ox + w * 0.8), dt * 20.0);
+        world.band = (ox + w * 0.22, ox + w * 0.78);
+        if !simple {
+            let hub_now = num(st, &["t"]).unwrap_or(0.0);
+            let hour = ((hub_now as i64 + world.tz).rem_euclid(86400)) / 3600;
+            let (pointer, band) = (world.pointer, world.band);
+            world.pet.paint(win, cx, font, st, pal, ox, oy, w, h, t, band, hour, pointer, kind != "racks", get(st, &["ui", "motion"]).as_str() == Some("reduced"));
+        }
+        if let Some(n) = world.card_note.lock().ok().and_then(|mut g| g.take()) {
+            world.card.note = Some((n, t));
+        }
+        world.card.paint(win, cx, font, st, pal, ox, oy, w, h, t);
+        let falling = false;
+        world.lively = !world.audio.is_empty() || falling || world.overhead.busy() || world.card.is_open() || world.pet.busy() || t - world.alert_at < 8.0;
+        crate::draw::vignette(win, ox, oy, w, h);
+        return Vec::new();
+    }
     let still_l = get(st, &["ui", "motion"]).as_str() == Some("reduced");
     let polish = crate::look::on(st) && !wall && !noir && !mars;
     let lt = if polish { crate::look::light(st, pal, &frame) } else { None };
