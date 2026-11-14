@@ -136,8 +136,13 @@ a=$(t); sleep 60; b=$(t); echo "CPU $(( (b-a) * 100 / 60 / $(getconf CLK_TCK) ))
   joy (your days with Pulse and their streak, the music, your agents' work done, and you: a click pets it). It
   looks at the pointer, grows with your days (a second antenna after a month), wears a helmet on Mars and in
   space. A click opens its card with the five needs and why.
-- **Four new worlds**, each linked to as much of your world as it can hold; a click on any piece says what it is:
-  - `station`: an orbital station over the real Earth (your day and night, your clouds, the aurora with Kp, the
+- **Four new worlds**, each linked to as much of your world as it can hold; a click on any piece says what it is.
+  Their stage is painted pixel by pixel on a thread of its own, the way a matte painting is (fractal noise, the
+  Sun's real direction, atmosphere and fog, a dither so nothing bands), again only when the light or your data
+  change enough to be seen; what moves is drawn over it every frame:
+  - `station`: an orbital station over the real Earth, ray-traced as a rocket's camera sees it from 400 km (the
+    true curvature, continents, ice, cloud fields and their shadows, the Sun's glint on the sea, cities at night,
+    the thin blue band of the atmosphere), with your day and night, your clouds, the aurora with Kp, the
     ISS, the Starlink train, real launches climbing from the limb). The modules are your repos (CI is their
     light), a cargo ship docks for every commit, the deploy builds a new module, the solar wings are your roof's
     power, the dish's beam is your network down and up, the agents are astronauts on a spacewalk, a service down
@@ -145,7 +150,9 @@ a=$(t); sleep 60; b=$(t); echo "CPU $(( (b-a) * 100 / 60 / $(getconf CLK_TCK) ))
   - `abyss`: an undersea base. The cables on the sea floor are your network (a service down breaks one), the
     buoys your network's devices, the domes your repos, the submarines your agents, the fish swim as fast as your
     CPU works, the sonar pings as fast as your line answers, the ships on the surface are the planes over you.
-  - `racks`: a server room. A rack for each core blinking with its load, the cable trays carrying your traffic,
+  - `racks`: a whole server room: a cold aisle closed by glass doors, raised floor, cable ladders, cooling units,
+    racks filled with servers, storage, switches and patch panels. A rack for each core blinking with its load, the
+    switches' ports blinking with your traffic, the cable trays carrying your traffic,
     the console with RAM, disk, temperature and the deploy, the services down as red servers, technicians for
     agents; the aisle warms up with your machine.
   - `moonbase`: the Earth in its real phase over the Moon, the laser link to it (1.28 light seconds) carrying your
