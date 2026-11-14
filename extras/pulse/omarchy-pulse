@@ -54,6 +54,9 @@
   omarchy-pulse theme from-wallpaper [PICTURE] NAME
                                  a new Omarchy theme from a picture's colours (to review; Pulse never applies it)
   omarchy-pulse news [read]      the news to read before you update (manual interventions); read: mark them read
+  omarchy-pulse native on | off | update | status
+                                 pulse-native, the native renderer: install the ready binary and draw with it (on),
+                                 back to the web wallpaper (off), the newest release (update), what is installed
 
 Config: ~/.config/omarchy-pulse/pulse.toml (written on the first run; your own scripts go in
 ~/.config/omarchy-pulse/sources/, which is on the PATH of every source command).
@@ -7895,6 +7898,64 @@ def cmd_term() -> int:
             show([f"{cmd0}: unknown (help)"])
 
 
+def cmd_native(args: list) -> int:
+    """pulse-native, the native renderer: the scripts beside the engine do the work (pulse-native-get downloads and
+    checks a release, install-native switches the wallpaper and goes back to the web page if it does not start)."""
+    share = Path.home() / ".local/share/omarchy-pulse"
+    get, inst, binary = share / "pulse-native-get", share / "install-native", share / "pulse-native"
+    sub = args[0] if args else "status"
+    dropin = Path.home() / ".config/systemd/user/omarchy-pulse.service.d/native.conf"
+    choice = CONF_DIR / "renderer"
+
+    def remember(what: str) -> None:
+        try:
+            choice.parent.mkdir(parents=True, exist_ok=True)
+            choice.write_text(what + "\n")
+        except OSError:
+            pass
+
+    if sub == "on":
+        remember("native")
+        if binary.exists() and inst.exists():
+            rc = subprocess.call([str(inst), "--switch"])
+        elif get.exists():
+            rc = subprocess.call([str(get)])
+        else:
+            print("pulse-native-get is missing: run extras/install-live again")
+            rc = 1
+        if rc != 0:
+            remember("web")   # it did not start here: the web page draws, and stays the choice
+        return rc
+    if sub == "update":
+        if not get.exists():
+            print("pulse-native-get is missing: run extras/install-live again")
+            return 1
+        return subprocess.call([str(get)] + (["--check"] if args[1:2] == ["--check"] else []))
+    if sub == "off":
+        remember("web")
+        if inst.exists():
+            return subprocess.call([str(inst), "--off"])
+        if dropin.exists():
+            dropin.unlink()
+            subprocess.call(["systemctl", "--user", "daemon-reload"])
+            subprocess.call(["systemctl", "--user", "try-restart", "omarchy-pulse.service"])
+        print("The web wallpaper draws Pulse.")
+        return 0
+    if sub == "status":
+        ver = ""
+        if binary.exists():
+            try:
+                ver = subprocess.run([str(binary), "--version"], capture_output=True, text=True, timeout=10).stdout.strip()
+            except (OSError, subprocess.SubprocessError):
+                ver = "pulse-native (it does not run here)"
+        print(f"drawing: {'pulse-native' if dropin.exists() else 'the web page'}")
+        print(f"installed: {ver or 'no pulse-native'}")
+        print("newer: omarchy-pulse native update --check")
+        return 0
+    print("usage: omarchy-pulse native on | off | update [--check] | status")
+    return 1
+
+
 def cmd_scene(args: list) -> int:
     """omarchy-pulse scene list | new NAME | check NAME | lab [NAME] | editor [NAME] | export NAME | import FILE | gallery | get NAME"""
     sub = args[0] if args else "list"
@@ -8230,6 +8291,8 @@ def main(argv: list[str]) -> int:
         return quiet_client(f"/api/agent/{urllib.parse.quote(argv[2])}?{q}")
     if cmd == "scene":
         return cmd_scene(argv[2:])
+    if cmd == "native":
+        return cmd_native(argv[2:])
     if cmd == "trap":
         return quiet_client("/api/trap", sys.stdin.read(4000).encode())
     if cmd == "noc":

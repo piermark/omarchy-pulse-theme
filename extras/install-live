@@ -5,6 +5,9 @@
 #   install-live --always    live with every Omarchy theme (it takes each theme's colours)
 #   install-live --theme     back to: live only with the pulse theme
 #   install-live --remove    undo everything (your pulse.toml and the theme stay)
+#   install-live --native    draw it natively (pulse-native, a ready binary from the release; recommended on a PC)
+#   install-live --web       draw it with the web page (the default; OmarchyTV always uses it)
+# Without --native or --web, it asks once on a PC (x86_64) whether to draw natively.
 set -e
 here="$(cd "$(dirname "$0")" && pwd)"
 share="$HOME/.local/share/omarchy-pulse"
@@ -19,17 +22,21 @@ conf="$cfg_dir/live.conf"
 
 if [[ ${1:-} == --remove ]]; then
   systemctl --user stop omarchy-pulse.service 2>/dev/null || true
+  rm -rf "$unit_dir/omarchy-pulse.service.d"
   rm -f "$hook" "$desktop" "$unit" "$bin" "$conf"
   rm -rf "$share"
   systemctl --user daemon-reload 2>/dev/null || true
   echo "Omarchy Pulse removed. Your sources are still in $cfg_dir (delete the folder to forget them)."
   exit 0
 fi
+renderer=""
 case "${1:-}" in
   --always) mkdir -p "$cfg_dir"; echo "ALWAYS=1" > "$conf" ;;
   --theme) mkdir -p "$cfg_dir"; echo "ALWAYS=0" > "$conf" ;;
+  --native) renderer=native ;;
+  --web) renderer=web ;;
   "") ;;
-  *) echo "usage: install-live [--always|--theme|--remove]"; exit 1 ;;
+  *) echo "usage: install-live [--always|--theme|--native|--web|--remove]"; exit 1 ;;
 esac
 
 need=()
@@ -46,6 +53,9 @@ fi
 mkdir -p "$share" "$(dirname "$bin")" "$hook_dir" "$unit_dir" "$(dirname "$desktop")" "$cfg_dir/sources"
 cp -r "$here/pulse/." "$share/"
 install -m 755 "$here/pulse-live" "$share/pulse-live"
+install -m 755 "$here/pulse-native-get" "$share/pulse-native-get"
+# the key that signs pulse-native's releases (when there is one): what pulse-native-get checks them against
+[[ -f $here/native-allowed-signers ]] && install -m 644 "$here/native-allowed-signers" "$share/native-allowed-signers"
 chmod +x "$share/omarchy-pulse" "$share"/sources/*
 ln -sf "$share/omarchy-pulse" "$bin"
 [[ -f $cfg_dir/pulse.toml ]] || cp "$share/pulse.toml" "$cfg_dir/pulse.toml"
@@ -86,6 +96,22 @@ EOF
 systemctl --user daemon-reload
 systemctl --user stop omarchy-pulse.service 2>/dev/null || true
 "$share/pulse-live"
+# Which renderer draws it: asked once on a PC, unless --native or --web said so (or it is already native)
+choice="$cfg_dir/renderer"   # the answer, so it is asked only once
+[[ -n $renderer ]] && echo "$renderer" > "$choice"
+if [[ -z $renderer && ! -s $choice && ! -f $unit_dir/omarchy-pulse.service.d/native.conf && $(uname -m) == x86_64 && -t 0 ]]; then
+  echo
+  echo "Pulse can be drawn natively on the GPU (pulse-native: lighter, smoother, the worlds only it has),"
+  echo "or by the web page as always. You can switch any time: omarchy-pulse native on / off."
+  read -r -p "Draw it natively? [Y/n] " yn
+  [[ ${yn,,} == n* ]] && renderer=web || renderer=native
+  echo "$renderer" > "$choice"
+fi
+if [[ $renderer == native ]]; then
+  "$share/pulse-native-get" || echo "pulse-native could not be installed: the web wallpaper draws Pulse (omarchy-pulse native on to try again)."
+elif [[ $renderer == web && -f $unit_dir/omarchy-pulse.service.d/native.conf ]]; then
+  "$share/install-native" --off 2>/dev/null || true
+fi
 echo
 echo "Done. Omarchy Pulse is live$( [[ -f $conf ]] && grep -q ALWAYS=1 "$conf" && echo " with every theme" || echo " with the pulse theme")."
 echo "  your sources:   $cfg_dir/pulse.toml   (saved = on the wallpaper in a few seconds)"

@@ -89,23 +89,29 @@ runs on OmarchyTV: you choose which one draws your desktop, and go back with one
 
 ### Install pulse-native
 
-Pulse 1.8 must be installed first (above: `extras/install-live`), because its hub is what pulse-native reads. Then:
+Pulse must be installed first (above: `extras/install-live`), because its hub is what pulse-native reads. Since
+pulse-native 1.1 the installer asks once on a PC whether to draw natively, and one command does it at any time:
+
+```bash
+omarchy-pulse native on        # a ready binary from the release, checked (SHA256, and its signature), no Rust
+omarchy-pulse native off       # back to the web wallpaper (pulse-native stays installed)
+omarchy-pulse native update    # the newest release
+omarchy-pulse native status    # which one draws, which version
+```
+
+If pulse-native does not start on your machine, the web wallpaper takes over again by itself. It adds its files to
+`~/.local/share/omarchy-pulse/` and one systemd drop-in; none of Pulse's own files change. It draws when Pulse
+itself would (the `pulse` theme, or `ALWAYS=1` in `~/.config/omarchy-pulse/live.conf`).
+
+**Build it yourself** (another architecture, or to change it):
 
 ```bash
 sudo pacman -S --needed rust wayland libxkbcommon libxkbcommon-x11 libxcb vulkan-icd-loader fontconfig freetype2
 git clone -b native https://github.com/piermark/omarchy-pulse-theme.git ~/pulse-native
 cd ~/pulse-native/native
 cargo build --release            # the first build takes a few minutes
-./install-native                 # it becomes your wallpaper, now and at every login
-./target/release/pulse-native --version
+./install-native                 # it becomes your wallpaper, now and at every login (--off: back to the web one)
 ```
-
-It adds two files to `~/.local/share/omarchy-pulse/` and one systemd drop-in; none of Pulse's own files change. It
-draws when Pulse itself would (the `pulse` theme, or `ALWAYS=1` in `~/.config/omarchy-pulse/live.conf`).
-
-**Update**: `cd ~/pulse-native && git pull && cd native && cargo build --release && ./install-native`
-
-**Back to the web wallpaper**: `cd ~/pulse-native/native && ./install-native --remove`
 
 **Try it without installing**: `./target/release/pulse-native --window` (a window) or
 `./target/release/pulse-native` (the wallpaper, with the web one stopped).

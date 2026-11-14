@@ -19,22 +19,26 @@ Mars, a giant LED billboard in the noir city. Everything is drawn at the screen'
 
 ## Install, and go back
 
-It needs Rust, a Wayland compositor with wlr-layer-shell (Hyprland on Omarchy) and a Vulkan or OpenGL driver (Mesa
-on Intel and AMD, the NVIDIA driver). Pulse must be
-installed already (`extras/install-live`): its hub, `omarchy-pulse serve`, is what both renderers read. The code
-lives on the `native` branch, not on `main`.
+The easy way: a ready binary from the release, checked before it runs. Pulse must be installed already
+(`extras/install-live`): its hub, `omarchy-pulse serve`, is what both renderers read.
 
 ```bash
-sudo pacman -S --needed rust wayland libxkbcommon libxkbcommon-x11 libxcb vulkan-icd-loader fontconfig freetype2
-git clone -b native https://github.com/piermark/omarchy-pulse-theme.git ~/pulse-native
-cd ~/pulse-native/native
-cargo build --release            # the first build takes a few minutes
-./install-native                 # makes it the wallpaper, now and at every login
-./install-native --remove        # back to the web wallpaper
+omarchy-pulse native on        # download the latest pulse-native, check it, draw the wallpaper with it
+omarchy-pulse native off       # back to the web wallpaper (pulse-native stays installed: on is instant)
+omarchy-pulse native update    # the newest release (update --check: only say whether there is one)
+omarchy-pulse native status    # which one draws, which version is installed
 ```
 
-It adds `pulse-native` and `pulse-native-live` to `~/.local/share/omarchy-pulse/` and one systemd drop-in
-(`omarchy-pulse.service.d/native.conf`); none of Pulse's own files change, and `pulse.toml` stays as it is.
+`extras/install-live` asks once on a PC whether to draw natively (`--native` or `--web` answer it beforehand; the
+answer is kept in `~/.config/omarchy-pulse/renderer`). No Rust, no build: the release carries
+`pulse-native-x86_64.tar.gz` with its `SHA256SUMS`, which is checked (and `SHA256SUMS.sig`, checked against the key
+in `native-allowed-signers` when the release is signed); anything that does not match is not installed. After the
+switch it waits a few seconds: if pulse-native does not stay up (a GPU it cannot draw on, a missing library), the
+web wallpaper takes over again by itself and says where to look. It needs a Wayland compositor with
+wlr-layer-shell (Hyprland on Omarchy) and a Vulkan or OpenGL driver (Mesa on Intel and AMD, the NVIDIA driver).
+
+It adds `pulse-native`, `pulse-native-live` and `install-native` to `~/.local/share/omarchy-pulse/` and one systemd
+drop-in (`omarchy-pulse.service.d/native.conf`); none of Pulse's own files change, and `pulse.toml` stays as it is.
 
 It draws only when Pulse itself would: with the `pulse` Omarchy theme, or with every theme if
 `~/.config/omarchy-pulse/live.conf` has `ALWAYS=1`. Otherwise the service exits quietly and nothing changes.
@@ -43,14 +47,37 @@ It draws only when Pulse itself would: with the `pulse` Omarchy theme, or with e
 It fills every monitor, also with a fractional scale (1.25, 1.5): the size of each screen is read from
 `hyprctl monitors -j`, because GPUI alone would see a smaller screen and draw a box in the middle.
 
-### Update
+### Build it yourself
 
-`install-native` builds only when there is no binary yet, so after a pull build again first:
+For another architecture, or to change it. The code lives on the `native` branch.
 
 ```bash
-cd ~/pulse-native && git pull && cd native && cargo build --release && ./install-native
-./target/release/pulse-native --version   # the version you have
+sudo pacman -S --needed rust wayland libxkbcommon libxkbcommon-x11 libxcb vulkan-icd-loader fontconfig freetype2
+git clone -b native https://github.com/piermark/omarchy-pulse-theme.git ~/pulse-native
+cd ~/pulse-native/native
+cargo build --release            # the first build takes a few minutes
+./install-native                 # makes it the wallpaper, now and at every login
+./install-native --off           # back to the web wallpaper (--remove also removes it)
 ```
+
+### Releases
+
+A tag `pulse-native-vX.Y.Z` (the version of `native/Cargo.toml`) starts `.github/workflows/pulse-native-release.yml`:
+it builds and tests on Arch, and attaches `pulse-native-x86_64.tar.gz` and `SHA256SUMS` to that release. To sign
+it, whoever holds the key downloads `SHA256SUMS`, signs it with an SSH key and attaches the signature:
+
+```bash
+ssh-keygen -Y sign -f ~/.ssh/KEY -n file SHA256SUMS      # writes SHA256SUMS.sig
+gh release upload pulse-native-vX.Y.Z SHA256SUMS.sig
+```
+
+and puts the public key, once, in `extras/native-allowed-signers` (and `native/allowed_signers`), one line:
+`pulse-native namespaces="file" ssh-ed25519 AAAA...`. Until then releases are checked by SHA256 alone.
+
+### Update
+
+`omarchy-pulse native update`; built yourself: `git pull && cargo build --release && ./install-native`.
+`pulse-native --version` says which one you have.
 
 ### Try it without installing
 
@@ -230,7 +257,8 @@ From the same state the web page reads:
 - **1.1.0**: what is down on the internet (the main AIs, X, the services the internet stands on, your line); the
   agents' cards (their window, take them away); Pip; the worlds `station`, `abyss`, `racks`, `moonbase`; Mars on
   Jezero's clock with the light's delay, Phobos and Deimos, dust devils with your wind; the Mars ship flies away; a
-  press that arrived twice counts once.
+  press that arrived twice counts once. Installed in seconds: `omarchy-pulse native on` (a ready, checked binary
+  from the release; back to the web page by itself if it does not start), and `extras/install-live` asks once.
 - **1.0.3**: the wallpaper sits on the layer-shell `bottom` layer, above the still background that newer Omarchy
   draws from its shell (at login it could cover Pulse) and still under every window; `--layer background` or
   `PULSE_LAYER=background` go back to the old layer.

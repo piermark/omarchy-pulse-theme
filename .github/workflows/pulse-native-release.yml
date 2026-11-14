@@ -1,0 +1,57 @@
+# pulse-native: when a tag pulse-native-vX.Y.Z is pushed, build the binary on Arch (what Omarchy is) and attach it to
+# that release, with SHA256SUMS: what `omarchy-pulse native on` and extras/install-live --native download and check.
+# The signature (SHA256SUMS.sig) is added by hand by whoever holds the key: see native/README.md, "Releases".
+name: pulse-native release
+
+on:
+  push:
+    tags: ["pulse-native-v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "the tag to build again (pulse-native-vX.Y.Z)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - name: Packages
+        run: pacman -Syu --noconfirm --needed git github-cli rust wayland libxkbcommon libxkbcommon-x11 libxcb vulkan-icd-loader fontconfig freetype2 pkgconf
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - name: The tag is the version
+        run: |
+          want="${TAG#pulse-native-v}"
+          have="$(grep -m1 '^version' native/Cargo.toml | cut -d'"' -f2)"
+          [ "$want" = "$have" ] || { echo "tag $TAG but native/Cargo.toml says $have"; exit 1; }
+      - name: Build
+        working-directory: native
+        run: cargo build --release --locked
+      - name: Test
+        working-directory: native
+        run: cargo test --release --locked --bin pulse-native
+      - name: Package
+        run: |
+          mkdir -p dist/pulse-native
+          install -m 755 native/target/release/pulse-native native/pulse-native-live native/install-native dist/pulse-native/
+          install -m 644 native/README.md LICENSE dist/pulse-native/
+          [ -f native/allowed_signers ] && install -m 644 native/allowed_signers dist/pulse-native/ || true
+          strip dist/pulse-native/pulse-native
+          dist/pulse-native/pulse-native --version
+          tar -C dist -czf dist/pulse-native-x86_64.tar.gz pulse-native
+          (cd dist && sha256sum pulse-native-x86_64.tar.gz > SHA256SUMS && cat SHA256SUMS)
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config --global --add safe.directory "$PWD"
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --verify-tag --title "pulse-native ${TAG#pulse-native-v}" --notes "See native/README.md, Changes."
+          gh release upload "$TAG" dist/pulse-native-x86_64.tar.gz dist/SHA256SUMS --clobber

@@ -1,0 +1,82 @@
+#!/bin/bash
+# Omarchy Pulse: install (or update) pulse-native, the native renderer, from its GitHub release: no Rust, no build.
+#   pulse-native-get              the latest release
+#   pulse-native-get VERSION      that one (1.1.0)
+#   pulse-native-get --check      only say whether a newer one is out
+# It downloads pulse-native-x86_64.tar.gz and SHA256SUMS from the release, checks the archive against them (and
+# SHA256SUMS against its signature, when the release has one and native/allowed_signers names the key), unpacks
+# it and runs its install-native, which switches the wallpaper and goes back to the web page by itself if the
+# native one does not start. Nothing is run that was not checked. (c) 2026 Marco Porro (x.com/MarcoPorro), MIT.
+set -euo pipefail
+repo="${PULSE_NATIVE_REPO:-piermark/omarchy-pulse-theme}"
+share="$HOME/.local/share/omarchy-pulse"
+cache="${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-pulse/native"
+want="${1:-}"
+check=0
+[[ $want == --check ]] && { check=1; want=""; }
+
+say() { printf '%s\n' "$*"; }
+die() { say "pulse-native: $*" >&2; exit 1; }
+
+[[ $(uname -m) == x86_64 ]] || die "the release is built for x86_64 only; on $(uname -m) build it: native/README.md"
+command -v curl >/dev/null || die "curl is missing (sudo pacman -S curl)"
+command -v sha256sum >/dev/null || die "sha256sum is missing (coreutils)"
+[[ -x $share/omarchy-pulse ]] || die "Pulse is not installed yet: run extras/install-live first"
+
+# which release: the newest tag pulse-native-v*, or the one asked for
+# (PULSE_NATIVE_API and PULSE_NATIVE_DL point elsewhere: a mirror, or a test)
+api="${PULSE_NATIVE_API:-https://api.github.com/repos/$repo/releases?per_page=30}"
+if [[ -n $want ]]; then
+  tag="pulse-native-v${want#v}"
+else
+  tag="$(curl -fsSL --retry 2 "$api" | python3 -c '
+import json, sys
+best = None
+for r in json.load(sys.stdin):
+    t = r.get("tag_name", "")
+    if not t.startswith("pulse-native-v") or r.get("draft") or r.get("prerelease"):
+        continue
+    if not any(a.get("name") == "pulse-native-x86_64.tar.gz" for a in r.get("assets", [])):
+        continue   # a release with nothing to install yet
+    v = tuple(int(x) if x.isdigit() else 0 for x in t[len("pulse-native-v"):].split("."))
+    if best is None or v > best[0]:
+        best = (v, t)
+print(best[1] if best else "")
+')" || die "could not reach GitHub (is the network up?)"
+  [[ -n $tag ]] || die "no release of pulse-native with a ready binary yet: build it (native/README.md)"
+fi
+ver="${tag#pulse-native-v}"
+have="$("$share/pulse-native" --version 2>/dev/null | awk '{print $2}' || true)"
+if ((check)); then
+  if [[ -n $have && $have == "$ver" ]]; then say "pulse-native $have is the latest."; else say "pulse-native $ver is out${have:+ (you have $have)}: omarchy-pulse native update"; fi
+  exit 0
+fi
+if [[ -n $have && $have == "$ver" && -z ${PULSE_NATIVE_FORCE:-} && -x $share/install-native ]]; then
+  say "pulse-native $ver is already installed."
+  exec "$share/install-native" --switch
+fi
+
+dir="$cache/$ver"
+rm -rf "$dir"
+mkdir -p "$dir"
+base="${PULSE_NATIVE_DL:-https://github.com/$repo/releases/download}/$tag"
+say "Downloading pulse-native $ver..."
+curl -fL --retry 2 --progress-bar -o "$dir/pulse-native-x86_64.tar.gz" "$base/pulse-native-x86_64.tar.gz" || die "the download failed"
+curl -fsSL --retry 2 -o "$dir/SHA256SUMS" "$base/SHA256SUMS" || die "the release has no SHA256SUMS: not installing what cannot be checked"
+# the signature: checked when the release has one and the key is known (native/allowed_signers, shipped with Pulse)
+signers="$share/native-allowed-signers"
+if curl -fsSL -o "$dir/SHA256SUMS.sig" "$base/SHA256SUMS.sig" 2>/dev/null; then
+  if [[ -s $signers ]] && command -v ssh-keygen >/dev/null; then
+    ssh-keygen -Y verify -f "$signers" -I pulse-native -n file -s "$dir/SHA256SUMS.sig" < "$dir/SHA256SUMS" >/dev/null 2>&1 \
+      || die "the signature of SHA256SUMS does not match the key Pulse knows: not installing"
+    say "Signature: good."
+  else
+    say "Signature: present, but this Pulse does not know the key yet (checked by SHA256 only)."
+  fi
+fi
+(cd "$dir" && grep ' pulse-native-x86_64.tar.gz$' SHA256SUMS | sha256sum -c --status) || die "the archive does not match SHA256SUMS: not installing"
+say "SHA256: good."
+tar -xzf "$dir/pulse-native-x86_64.tar.gz" -C "$dir"
+[[ -x $dir/pulse-native/pulse-native && -x $dir/pulse-native/install-native ]] || die "the archive is not as expected"
+"$dir/pulse-native/pulse-native" --version >/dev/null 2>&1 || die "the binary does not run on this system (glibc too old?): build it instead (native/README.md)"
+exec "$dir/pulse-native/install-native"

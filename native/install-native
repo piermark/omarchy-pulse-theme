@@ -1,41 +1,89 @@
 #!/bin/bash
 # Omarchy Pulse, native renderer: let pulse-native draw the live wallpaper instead of the web page.
-#   native/install-native            build it (if needed), install it, switch the wallpaper to it
-#   native/install-native --remove   go back to the web wallpaper (nothing else is touched)
-# Pulse itself must be installed first (extras/install-live). This adds two files next to it and one systemd
-# drop-in; it changes none of Pulse's own files, and your pulse.toml stays as it is.
+#   install-native            install it and switch the wallpaper to it: the ready binary next to this script (from
+#                             a release, see extras/pulse-native-get), else the one built in target/, else build it
+#   install-native --build    build it from source first (Rust), then install it
+#   install-native --switch   the installed one draws the wallpaper again (after --remove)
+#   install-native --off      the web wallpaper draws Pulse again; pulse-native stays installed (--switch is instant)
+#   install-native --remove   go back to the web wallpaper and remove pulse-native
+# Pulse itself must be installed first (extras/install-live). This adds its files next to Pulse and one systemd
+# drop-in; it changes none of Pulse's own files, and your pulse.toml stays as it is. When the native wallpaper does
+# not start (a GPU it cannot draw on, a missing library), it goes back to the web one by itself and says why.
 # (c) 2026 Marco Porro (x.com/MarcoPorro), MIT.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 share="$HOME/.local/share/omarchy-pulse"
 dropin="$HOME/.config/systemd/user/omarchy-pulse.service.d"
 unit="$HOME/.config/systemd/user/omarchy-pulse.service"
+conf="$HOME/.config/omarchy-pulse/live.conf"
 
-if [[ ${1:-} == --remove ]]; then
-  rm -f "$dropin/native.conf" "$share/pulse-native" "$share/pulse-native-live"
+web() {
+  rm -f "$dropin/native.conf"
   rmdir "$dropin" 2>/dev/null || true
   systemctl --user daemon-reload
   systemctl --user try-restart omarchy-pulse.service 2>/dev/null || true
-  echo "Done. The web wallpaper draws Pulse again."
-  exit 0
-fi
-[[ -z ${1:-} ]] || { echo "usage: install-native [--remove]"; exit 1; }
+}
+
+case "${1:-}" in
+  --off)
+    web
+    echo "Done. The web wallpaper draws Pulse again (omarchy-pulse native on to come back)."
+    exit 0 ;;
+  --remove)
+    web
+    rm -f "$share/pulse-native" "$share/pulse-native-live"
+    echo "Done. The web wallpaper draws Pulse again (omarchy-pulse native on to come back)."
+    exit 0 ;;
+  ""|--build|--switch) ;;
+  *) echo "usage: install-native [--build|--switch|--off|--remove]"; exit 1 ;;
+esac
 [[ -x $share/omarchy-pulse && -f $unit ]] || { echo "Pulse is not installed yet: run extras/install-live first."; exit 1; }
 
-if [[ ! -x $here/target/release/pulse-native ]]; then
-  command -v cargo >/dev/null || { echo "Rust is missing: sudo pacman -S --needed rust"; exit 1; }
-  (cd "$here" && cargo build --release)
+if [[ ${1:-} != --switch ]]; then
+  if [[ ${1:-} == --build || ( ! -x $here/pulse-native && ! -x $here/target/release/pulse-native ) ]]; then
+    command -v cargo >/dev/null || { echo "Rust is missing: sudo pacman -S --needed rust (or install a ready binary: omarchy-pulse native on)"; exit 1; }
+    (cd "$here" && cargo build --release)
+  fi
+  bin="$here/pulse-native"
+  [[ ${1:-} == --build || ! -x $bin ]] && bin="$here/target/release/pulse-native"
+  install -m 755 "$bin" "$share/pulse-native"
+  install -m 755 "$here/pulse-native-live" "$share/pulse-native-live"
+  install -m 755 "$here/install-native" "$share/install-native"
+  [[ -f $here/allowed_signers ]] && install -m 644 "$here/allowed_signers" "$share/native-allowed-signers"
 fi
-install -m 755 "$here/target/release/pulse-native" "$share/pulse-native"
-install -m 755 "$here/pulse-native-live" "$share/pulse-native-live"
+[[ -x $share/pulse-native && -x $share/pulse-native-live ]] || { echo "pulse-native is not installed: omarchy-pulse native on"; exit 1; }
+
 mkdir -p "$dropin"
 cat > "$dropin/native.conf" <<UNIT
-# Omarchy Pulse: the native renderer draws the wallpaper (native/install-native --remove to undo)
+# Omarchy Pulse: the native renderer draws the wallpaper (omarchy-pulse native off to undo)
 [Service]
 ExecStart=
 ExecStart=$share/pulse-native-live
 UNIT
 systemctl --user daemon-reload
 systemctl --user restart omarchy-pulse.service 2>/dev/null || true
-echo "Done. pulse-native draws the wallpaper now (journalctl --user -u omarchy-pulse -e to see it start)."
-echo "To go back: native/install-native --remove"
+ver="$("$share/pulse-native" --version 2>/dev/null || echo pulse-native)"
+
+# Does it draw? Only when Pulse would draw at all (the pulse theme, or ALWAYS=1); then it must still be running
+# after a few seconds, or the web page takes over again.
+theme="$(cat "$HOME/.local/state/omarchy/current/theme.name" 2>/dev/null || cat "$HOME/.config/omarchy/current/theme.name" 2>/dev/null || true)"
+ALWAYS=0
+[[ -f $conf ]] && . "$conf"
+if [[ $theme == pulse || $ALWAYS == 1 ]] && [[ -n ${WAYLAND_DISPLAY:-} ]]; then
+  ok=0
+  for _ in 1 2 3 4 5 6; do
+    sleep 2
+    if pgrep -u "$(id -u)" -x pulse-native >/dev/null; then ok=$((ok + 1)); else ok=0; fi
+    ((ok >= 3)) && break
+  done
+  if ((ok < 3)); then
+    web
+    echo "pulse-native did not start here, so the web wallpaper draws Pulse again."
+    echo "What it said: journalctl --user -u omarchy-pulse -e   (and native/README.md, \"Why it may not start\")"
+    exit 2
+  fi
+  echo "Done. $ver draws the wallpaper now."
+else
+  echo "Done. $ver will draw the wallpaper whenever Pulse is live (the pulse theme, or extras/install-live --always)."
+fi
+echo "Back to the web wallpaper: omarchy-pulse native off · updates: omarchy-pulse native update"
