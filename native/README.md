@@ -31,8 +31,8 @@ omarchy-pulse native status    # which one draws, which version is installed
 
 `extras/install-live` asks once on a PC whether to draw natively (`--native` or `--web` answer it beforehand; the
 answer is kept in `~/.config/omarchy-pulse/renderer`). No Rust, no build: the release carries
-`pulse-native-x86_64.tar.gz` with its `SHA256SUMS`, which is checked (and `SHA256SUMS.sig`, checked against the key
-in `native-allowed-signers` when the release is signed); anything that does not match is not installed. After the
+`pulse-native-x86_64.tar.gz` with its `SHA256SUMS`, which is checked (and `SHA256SUMS.sig`, required and checked
+against the key once `native-allowed-signers` has one); anything that does not match is not installed. After the
 switch it waits a few seconds: if pulse-native does not stay up (a GPU it cannot draw on, a missing library), the
 web wallpaper takes over again by itself and says where to look. It needs a Wayland compositor with
 wlr-layer-shell (Hyprland on Omarchy) and a Vulkan or OpenGL driver (Mesa on Intel and AMD, the NVIDIA driver).
@@ -72,7 +72,9 @@ gh release upload pulse-native-vX.Y.Z SHA256SUMS.sig
 ```
 
 and puts the public key, once, in `extras/native-allowed-signers` (and `native/allowed_signers`), one line:
-`pulse-native namespaces="file" ssh-ed25519 AAAA...`. Until then releases are checked by SHA256 alone.
+`pulse-native namespaces="file" ssh-ed25519 AAAA...`. Until then releases are checked by SHA256 alone. Once the
+key is there, a release without `SHA256SUMS.sig` is never installed: `native update` takes the newest signed release,
+and asking for an unsigned version stops with an error.
 
 ### Update
 

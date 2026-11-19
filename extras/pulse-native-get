@@ -4,7 +4,7 @@
 #   pulse-native-get VERSION      that one (1.1.0)
 #   pulse-native-get --check      only say whether a newer one is out
 # It downloads pulse-native-x86_64.tar.gz and SHA256SUMS from the release, checks the archive against them (and
-# SHA256SUMS against its signature, when the release has one and native/allowed_signers names the key), unpacks
+# SHA256SUMS against its signature: required once Pulse knows the key, native-allowed-signers), unpacks
 # it and runs its install-native, which switches the wallpaper and goes back to the web page by itself if the
 # native one does not start. Nothing is run that was not checked. (c) 2026 Marco Porro (x.com/MarcoPorro), MIT.
 set -euo pipefail
@@ -23,21 +23,35 @@ command -v curl >/dev/null || die "curl is missing (sudo pacman -S curl)"
 command -v sha256sum >/dev/null || die "sha256sum is missing (coreutils)"
 [[ -x $share/omarchy-pulse ]] || die "Pulse is not installed yet: run extras/install-live first"
 
+# the key that signs the releases (native-allowed-signers, shipped with Pulse). Once it is known, a release must carry
+# a good signature: one without SHA256SUMS.sig is not installed, or whoever can change the files of a release could
+# leave the signature out and be checked against their own SHA256SUMS only
+signers="$share/native-allowed-signers"
+signed=0
+if [[ -s $signers ]]; then
+  signed=1
+  command -v ssh-keygen >/dev/null || die "ssh-keygen is missing (sudo pacman -S openssh): it checks the signature of the release"
+fi
+
 # which release: the newest tag pulse-native-v*, or the one asked for
 # (PULSE_NATIVE_API and PULSE_NATIVE_DL point elsewhere: a mirror, or a test)
 api="${PULSE_NATIVE_API:-https://api.github.com/repos/$repo/releases?per_page=30}"
 if [[ -n $want ]]; then
   tag="pulse-native-v${want#v}"
 else
-  tag="$(curl -fsSL --retry 2 "$api" | python3 -c '
-import json, sys
+  tag="$(curl -fsSL --retry 2 "$api" | PULSE_NATIVE_SIGNED=$signed python3 -c '
+import json, os, sys
+signed = os.environ.get("PULSE_NATIVE_SIGNED") == "1"
 best = None
 for r in json.load(sys.stdin):
     t = r.get("tag_name", "")
     if not t.startswith("pulse-native-v") or r.get("draft") or r.get("prerelease"):
         continue
-    if not any(a.get("name") == "pulse-native-x86_64.tar.gz" for a in r.get("assets", [])):
+    names = {a.get("name") for a in r.get("assets", [])}
+    if "pulse-native-x86_64.tar.gz" not in names:
         continue   # a release with nothing to install yet
+    if signed and "SHA256SUMS.sig" not in names:
+        continue   # not signed yet: the newest signed one instead
     v = tuple(int(x) if x.isdigit() else 0 for x in t[len("pulse-native-v"):].split("."))
     if best is None or v > best[0]:
         best = (v, t)
@@ -63,16 +77,16 @@ base="${PULSE_NATIVE_DL:-https://github.com/$repo/releases/download}/$tag"
 say "Downloading pulse-native $ver..."
 curl -fL --retry 2 --progress-bar -o "$dir/pulse-native-x86_64.tar.gz" "$base/pulse-native-x86_64.tar.gz" || die "the download failed"
 curl -fsSL --retry 2 -o "$dir/SHA256SUMS" "$base/SHA256SUMS" || die "the release has no SHA256SUMS: not installing what cannot be checked"
-# the signature: checked when the release has one and the key is known (native/allowed_signers, shipped with Pulse)
-signers="$share/native-allowed-signers"
-if curl -fsSL -o "$dir/SHA256SUMS.sig" "$base/SHA256SUMS.sig" 2>/dev/null; then
-  if [[ -s $signers ]] && command -v ssh-keygen >/dev/null; then
-    ssh-keygen -Y verify -f "$signers" -I pulse-native -n file -s "$dir/SHA256SUMS.sig" < "$dir/SHA256SUMS" >/dev/null 2>&1 \
-      || die "the signature of SHA256SUMS does not match the key Pulse knows: not installing"
-    say "Signature: good."
-  else
-    say "Signature: present, but this Pulse does not know the key yet (checked by SHA256 only)."
-  fi
+# the signature: required when the key is known (above); without a key only SHA256SUMS is checked, which catches a
+# broken download but not a release whose files were changed
+if ((signed)); then
+  curl -fsSL --retry 2 -o "$dir/SHA256SUMS.sig" "$base/SHA256SUMS.sig" 2>/dev/null \
+    || die "the release has no signature (SHA256SUMS.sig) and Pulse knows the key: not installing what cannot be checked"
+  ssh-keygen -Y verify -f "$signers" -I pulse-native -n file -s "$dir/SHA256SUMS.sig" < "$dir/SHA256SUMS" >/dev/null 2>&1 \
+    || die "the signature of SHA256SUMS does not match the key Pulse knows: not installing"
+  say "Signature: good."
+else
+  say "Signature: not checked, this Pulse does not know the key yet (checked by SHA256 only)."
 fi
 (cd "$dir" && grep ' pulse-native-x86_64.tar.gz$' SHA256SUMS | sha256sum -c --status) || die "the archive does not match SHA256SUMS: not installing"
 say "SHA256: good."
